@@ -6,11 +6,14 @@ A multi-module Spring Boot application demonstrating reactive Redis messaging pa
 - **Two-way Request-Reply** over both Pub/Sub and Redis Streams
 - **Dead Letter Queue (DLQ)** with retry, republish, and age-based pruning
 - **Sync vs Async** consumer mode switchable at runtime
-- **Racer Annotations** — `@EnableRacer`, `@RacerPublisher`, `@PublishResult` for declarative, property-driven publishing
+- **Racer Annotations** — `@EnableRacer`, `@RacerPublisher`, `@PublishResult`, `@RacerPriority` for declarative, property-driven publishing
 - **Multiple Channels** — declare unlimited named channels in `application.properties`
 - **Durable Publishing** — `@PublishResult(durable = true)` writes to Redis Streams for at-least-once delivery
 - **Content-Based Router** — `@RacerRoute` / `@RacerRouteRule` for regex-pattern message routing
 - **Atomic Batch Publish** — `RacerTransaction.execute()` for ordered multi-channel publish
+- **Pipelined Batch Publish** — `RacerPipelinedPublisher` / `/api/publish/batch-pipelined` issues all commands in parallel for maximum throughput
+- **Consumer Scaling** — configurable concurrency per stream, named consumers, and key-based sharding via `RacerShardedStreamPublisher`
+- **Message Priority** — `RacerPriorityPublisher` + `RacerPriorityConsumerService` route messages to `HIGH`/`NORMAL`/`LOW` sub-channels
 - **Micrometer Metrics** — Prometheus/Actuator instrumentation for published/consumed/failed/DLQ/latency counters
 - **Retention Service** — scheduled `XTRIM` + DLQ age-based eviction
 - **High Availability** — Sentinel and Cluster Docker Compose topologies included
@@ -31,6 +34,7 @@ A multi-module Spring Boot application demonstrating reactive Redis messaging pa
    - [@RacerPublisher — field injection](#racerpublisher--field-injection)
    - [@PublishResult — method-level auto-publish](#publishresult--method-level-auto-publish)
    - [@RacerRoute — content-based routing](#racerroute--content-based-routing)
+   - [@RacerPriority — message priority routing](#racerpriority--message-priority-routing)
    - [Multi-channel configuration](#multi-channel-configuration)
 7. [Redis Keys & Channels Reference](#redis-keys--channels-reference)
 8. [Message Schemas](#message-schemas)
@@ -45,16 +49,19 @@ A multi-module Spring Boot application demonstrating reactive Redis messaging pa
     - [Responder Status API](#responder-status-api)
 11. [Observability & Metrics](#observability--metrics)
 12. [High Availability](#high-availability)
-13. [End-to-End Flows](#end-to-end-flows)
-14. [Extending the Application](#extending-the-application)
-15. [Error Handling & DLQ Behaviour](#error-handling--dlq-behaviour)
-16. [Comparison with Other Brokers](#comparison-with-other-brokers)
+13. [Consumer Scaling & Sharding](#consumer-scaling--sharding)
+14. [Pipelined Publishing](#pipelined-publishing)
+15. [Message Priority](#message-priority)
+16. [End-to-End Flows](#end-to-end-flows)
+17. [Extending the Application](#extending-the-application)
+18. [Error Handling & DLQ Behaviour](#error-handling--dlq-behaviour)
+19. [Comparison with Other Brokers](#comparison-with-other-brokers)
     - [Architecture at a Glance](#architecture-at-a-glance)
     - [Advantages of Racer](#advantages-of-racer)
     - [Disadvantages & Mitigations](#disadvantages--mitigations)
     - [When to Use What](#when-to-use-what)
-17. [Roadmap & Implementation Status](#roadmap--implementation-status)
-18. [Tutorials](TUTORIALS.md) *(separate file)*
+20. [Roadmap & Implementation Status](#roadmap--implementation-status)
+21. [Tutorials](TUTORIALS.md) *(separate file)*
 
 ---
 
@@ -265,6 +272,12 @@ java -jar racer-client/target/racer-client-0.0.1-SNAPSHOT.jar
 | `racer.channels.<alias>.name` | — | Redis channel name for this alias |
 | `racer.channels.<alias>.async` | `true` | Default async flag for this channel |
 | `racer.channels.<alias>.sender` | `racer` | Default sender label for this channel |
+| `racer.pipeline.enabled` | `false` | Enable pipelined batch publishing (R-9) |
+| `racer.pipeline.max-batch-size` | `100` | Maximum messages per pipelined batch (R-9) |
+| `racer.priority.enabled` | `false` | Enable priority sub-channel publishing (R-10) |
+| `racer.priority.levels` | `HIGH,NORMAL,LOW` | Comma-separated priority level names, highest first (R-10) |
+| `racer.priority.strategy` | `strict` | Drain strategy: `strict` or `weighted` (R-10) |
+| `racer.priority.channels` | — | Comma-separated channel aliases eligible for priority routing (R-10) |
 | `management.endpoints.web.exposure.include` | `health,info` | Actuator endpoints to expose (add `metrics,prometheus`) |
 | `management.metrics.tags.application` | — | Tag all metrics with app name |
 | `logging.level.com.cheetah.racer` | `DEBUG` | Log level |
@@ -285,6 +298,17 @@ java -jar racer-client/target/racer-client-0.0.1-SNAPSHOT.jar
 | `racer.retention.stream-max-len` | `10000` | Max entries to keep in durable streams (XTRIM) |
 | `racer.retention.dlq-max-age-hours` | `72` | DLQ entries older than this are pruned |
 | `racer.retention.schedule-cron` | `0 0 * * * *` | Cron for automatic retention runs (hourly by default) |
+| `racer.consumer.concurrency` | `1` | Number of concurrent consumer instances per stream (R-8) |
+| `racer.consumer.name-prefix` | `consumer` | Prefix for generated consumer names, e.g. `consumer-0` (R-8) |
+| `racer.consumer.poll-batch-size` | `1` | XREADGROUP COUNT — entries read per poll (R-8) |
+| `racer.consumer.poll-interval-ms` | `200` | Milliseconds between polls when stream is empty (R-8) |
+| `racer.sharding.enabled` | `false` | Enable key-based stream sharding (R-8) |
+| `racer.sharding.shard-count` | `4` | Number of shard suffixes: `stream:0` … `stream:N-1` (R-8) |
+| `racer.sharding.streams` | — | Comma-separated base stream keys to shard (R-8) |
+| `racer.priority.enabled` | `false` | Enable priority sub-channel consumer (R-10) |
+| `racer.priority.levels` | `HIGH,NORMAL,LOW` | Priority level names (R-10) |
+| `racer.priority.strategy` | `strict` | `strict` (drain high first) or `weighted` (R-10) |
+| `racer.priority.channels` | — | Comma-separated base Redis channel names to subscribe with priority (R-10) |
 | `management.endpoints.web.exposure.include` | `health,info` | Actuator endpoints to expose (add `metrics,prometheus`) |
 | `logging.level.com.cheetah.racer` | `DEBUG` | Log level |
 
@@ -456,6 +480,63 @@ public class OrderRouter {
 
 ---
 
+### `@RacerPriority` — message priority routing
+
+Annotate a method alongside `@PublishResult` to tag the published message with a priority level. `RacerPriorityPublisher` (active when `racer.priority.enabled=true`) routes the message to the correct priority sub-channel.
+
+**Sub-channel naming:**
+```
+racer:orders:priority:HIGH
+racer:orders:priority:NORMAL
+racer:orders:priority:LOW
+```
+
+**Usage:**
+```java
+@PublishResult(channelRef = "orders", sender = "checkout")
+@RacerPriority(defaultLevel = "HIGH")
+public RacerMessage placeUrgentOrder(OrderRequest req) {
+    // If the returned RacerMessage has priority = null/blank,
+    // defaultLevel ("HIGH") is used.
+    return RacerMessage.create("racer:orders", req.toString(), "checkout", "HIGH");
+}
+```
+
+**`@RacerPriority` attributes**
+
+| Attribute | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `defaultLevel` | `String` | `"NORMAL"` | Priority level used when the message's own `priority` field is blank. Must match one of the names in `racer.priority.levels`. |
+
+**Built-in levels** (`PriorityLevel` enum):
+
+| Level | Weight | Description |
+|-------|--------|-------------|
+| `HIGH` | 0 | Processed first |
+| `NORMAL` | 1 | Default |
+| `LOW` | 2 | Processed last |
+
+**Publishing with priority via REST:**
+```bash
+curl -s -X POST http://localhost:8080/api/publish/async \
+  -H "Content-Type: application/json" \
+  -d '{"channel":"racer:orders","payload":"urgent-order","sender":"checkout","priority":"HIGH"}'
+```
+
+**Consumer side (`racer-client`):**
+
+Enable `racer.priority.enabled=true` and configure `racer.priority.channels`. The `RacerPriorityConsumerService` subscribes to all priority sub-channels, buffers messages in a `PriorityBlockingQueue` ordered by level weight, and drains them in strict priority order.
+
+```properties
+# racer-client/application.properties
+racer.priority.enabled=true
+racer.priority.levels=HIGH,NORMAL,LOW
+racer.priority.strategy=strict
+racer.priority.channels=racer:orders,racer:notifications
+```
+
+---
+
 ### Multi-channel configuration
 
 Declare as many channel aliases as needed in `application.properties`. Each alias becomes a dedicated `RacerChannelPublisher` registered at startup.
@@ -512,13 +593,16 @@ Every `RacerChannelPublisher` wraps the payload in a lightweight JSON envelope b
 | `racer:notifications` | Pub/Sub channel | Broadcast-only notification channel |
 | `racer:reply:<correlationId>` | Pub/Sub channel | Ephemeral per-request reply channel (auto-cleaned) |
 | `racer:<alias>` | Pub/Sub channel | Dynamic channels created via `@RacerRoute` targets |
+| `racer:<channel>:priority:<LEVEL>` | Pub/Sub channel | Priority sub-channels (R-10) — e.g. `racer:orders:priority:HIGH` |
 | `racer:dlq` | List | Dead Letter Queue (LIFO push, FIFO pop) |
 | `racer:stream:requests` | Stream | Request stream for streams-based request-reply |
 | `racer:stream:response:<correlationId>` | Stream | Per-request response stream (auto-deleted after read) |
 | `racer:<name>:stream` | Stream | **Durable stream** written by `@PublishResult(durable=true)` |
+| `racer:<name>:stream:<n>` | Stream | **Sharded durable stream** shard `n` (R-8) — e.g. `racer:orders:stream:0` |
 
 Consumer group on `racer:stream:requests`: **`racer-client-group`**  
-Consumer group on durable streams: **`racer-durable-group`** (one per stream key in `racer.durable.stream-keys`)
+Consumer group on durable streams: **`racer-durable-consumers`** (one per stream key in `racer.durable.stream-keys`)  
+Consumer names within group: **`<namePrefix>-<index>`** e.g. `consumer-0`, `consumer-1` (configurable via `racer.consumer.*`)
 
 ---
 
@@ -533,9 +617,12 @@ Consumer group on durable streams: **`racer-durable-group`** (one per stream key
   "payload":    "your message content",
   "sender":     "racer-server",
   "timestamp":  "2026-03-01T10:00:00Z",
-  "retryCount": 0
+  "retryCount": 0,
+  "priority":   "NORMAL"
 }
 ```
+
+> **`priority` field (R-10):** Optional. Accepted values: `HIGH`, `NORMAL`, `LOW` (or any custom level declared in `racer.priority.levels`). Defaults to `NORMAL` when absent. Used by `RacerPriorityPublisher` to route to the correct sub-channel.
 
 ### RacerRequest (request-reply)
 
@@ -592,6 +679,8 @@ Base path: `/api/publish`
 
 Publish a single message **non-blocking**. Returns immediately after enqueuing to Redis; the reactive chain completes in the background.
 
+When `racer.priority.enabled=true` and a `priority` field is provided, the message is routed to the appropriate priority sub-channel via `RacerPriorityPublisher`.
+
 **Request Body**
 
 | Field | Type | Required | Default | Description |
@@ -599,16 +688,18 @@ Publish a single message **non-blocking**. Returns immediately after enqueuing t
 | `payload` | string | Yes | — | The message content |
 | `sender` | string | No | `racer-server` | Identifies who sent the message |
 | `channel` | string | No | `racer:messages` | Target Pub/Sub channel |
+| `priority` | string | No | — | Priority level: `HIGH`, `NORMAL`, or `LOW` (R-10, requires `racer.priority.enabled=true`) |
 
 ```json
 {
-  "payload": "Hello async world",
-  "sender":  "my-service",
-  "channel": "racer:messages"
+  "payload":  "Urgent order",
+  "sender":   "checkout",
+  "channel":  "racer:orders",
+  "priority": "HIGH"
 }
 ```
 
-**Response `200 OK`**
+**Response `200 OK`** (standard)
 
 ```json
 {
@@ -619,11 +710,29 @@ Publish a single message **non-blocking**. Returns immediately after enqueuing t
 }
 ```
 
+**Response `200 OK`** (with priority)
+
+```json
+{
+  "status":      "published",
+  "mode":        "async-priority",
+  "channel":     "racer:orders",
+  "priority":    "HIGH",
+  "subscribers": 1
+}
+```
+
 **curl example:**
 ```bash
+# Standard
 curl -s -X POST http://localhost:8080/api/publish/async \
   -H "Content-Type: application/json" \
   -d '{"payload":"Hello async world","sender":"me"}'
+
+# With priority (requires racer.priority.enabled=true)
+curl -s -X POST http://localhost:8080/api/publish/async \
+  -H "Content-Type: application/json" \
+  -d '{"channel":"racer:orders","payload":"urgent","sender":"checkout","priority":"HIGH"}'
 ```
 
 ---
@@ -730,6 +839,78 @@ Array of publish items:
 **curl example:**
 ```bash
 curl -s -X POST http://localhost:8080/api/publish/batch-atomic \
+  -H "Content-Type: application/json" \
+  -d '[
+    {"alias":"orders","payload":"Order #1","sender":"checkout"},
+    {"alias":"audit","payload":"Audit #1","sender":"checkout"}
+  ]'
+```
+
+---
+
+#### `POST /api/publish/batch-pipelined`
+
+Publish **multiple payloads to a single channel** using parallel reactive merging (R-9 — Throughput Optimisation). All `PUBLISH` commands are issued concurrently; Lettuce (the reactive Redis driver) automatically pipelines them over one connection, reducing N round-trips to ~1.
+
+Use this instead of `/api/publish/batch` when throughput matters more than per-message error isolation.
+
+**Request Body** — same shape as `/api/publish/batch`
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `payloads` | string[] | Yes | — | Array of message strings |
+| `sender` | string | No | `racer-server` | Sender identifier |
+| `channel` | string | No | `racer:messages` | Target channel |
+
+```json
+{
+  "payloads": ["order-1", "order-2", "order-3"],
+  "sender":   "batch-producer",
+  "channel":  "racer:orders"
+}
+```
+
+**Response `200 OK`**
+
+```json
+{
+  "status":           "published",
+  "mode":             "pipelined-batch",
+  "channel":          "racer:orders",
+  "messageCount":     3,
+  "subscriberCounts": [1, 1, 1]
+}
+```
+
+**curl example:**
+```bash
+curl -s -X POST http://localhost:8080/api/publish/batch-pipelined \
+  -H "Content-Type: application/json" \
+  -d '{"payloads":["msg1","msg2","msg3"],"sender":"bench","channel":"racer:orders"}'
+```
+
+---
+
+#### `POST /api/publish/batch-atomic-pipelined`
+
+Same as `/api/publish/batch-atomic` (multi-channel, alias-based) but executed in **parallel pipelined mode** instead of sequential `Flux.concat` (R-9). Use when you need multi-channel batches with maximum throughput and can tolerate non-deterministic ordering.
+
+**Request Body** — same as `/api/publish/batch-atomic`
+
+**Response `200 OK`**
+
+```json
+{
+  "status":           "published",
+  "mode":             "atomic-batch-pipelined",
+  "messageCount":     3,
+  "subscriberCounts": [1, 1, 1]
+}
+```
+
+**curl example:**
+```bash
+curl -s -X POST http://localhost:8080/api/publish/batch-atomic-pipelined \
   -H "Content-Type: application/json" \
   -d '[
     {"alias":"orders","payload":"Order #1","sender":"checkout"},
@@ -1500,6 +1681,167 @@ spring.data.redis.cluster.nodes=localhost:7001,localhost:7002,localhost:7003,loc
 
 ---
 
+## Consumer Scaling & Sharding
+
+> **R-8 — Consumer Scaling & Horizontal Sharding**
+
+By default a single consumer (`consumer-0`) reads from each stream. For high-throughput workloads you can:
+
+1. **Increase concurrency** — spawn N named consumers inside one process, each issuing an independent `XREADGROUP COUNT <batchSize>` loop.
+2. **Enable key-based sharding** — publish to `racer:<stream>:stream:<n>` shards using CRC-16/CCITT routing (`RacerShardedStreamPublisher`).
+
+### Concurrency configuration
+
+```properties
+# racer-client/application.properties
+racer.consumer.concurrency=4           # spawn consumer-0 … consumer-3
+racer.consumer.name-prefix=worker      # worker-0 … worker-3
+racer.consumer.poll-batch-size=10      # read 10 entries per XREADGROUP call
+racer.consumer.poll-interval-ms=100    # poll every 100 ms when idle
+```
+
+### Sharding configuration
+
+```properties
+# racer-server/application.properties — publisher side
+racer.sharding.enabled=true
+racer.sharding.shard-count=4
+racer.sharding.streams=racer:orders:stream,racer:events:stream
+```
+
+Publishing with a shard key:
+```java
+@Autowired RacerShardedStreamPublisher shardedPublisher;
+
+shardedPublisher.publishToShard("racer:orders:stream", payload, sender, orderId)
+    .subscribe();
+// Routes to racer:orders:stream:0 … :3 based on CRC-16(orderId) % 4
+```
+
+**Consumer side** — add the concrete shard keys to `racer.durable.stream-keys`:
+```properties
+racer.durable.stream-keys=racer:orders:stream:0,racer:orders:stream:1,racer:orders:stream:2,racer:orders:stream:3
+```
+
+> See [Tutorial 16](TUTORIALS.md#tutorial-16--consumer-scaling--stream-sharding) for a full walkthrough.
+
+---
+
+## Pipelined Publishing
+
+> **R-9 — Throughput Optimisation / Pipelining**
+
+`RacerPipelinedPublisher` issues all `PUBLISH` commands in a batch concurrently via `Flux.flatMap(concurrency = N)`. Lettuce (the reactive Redis driver) automatically pipelines these commands over a single connection, collapsing N round-trips into approximately 1, which significantly increases throughput for bulk workloads.
+
+### Comparison
+
+| Endpoint | Execution model | Use when |
+|----------|-----------------|----------|
+| `POST /api/publish/batch` | Sequential `Flux.concat` | Order matters, low volume |
+| `POST /api/publish/batch-pipelined` | Parallel `Flux.flatMap` (pipelined) | High throughput, single channel |
+| `POST /api/publish/batch-atomic` | Sequential, multi-channel | Ordered cross-channel fanout |
+| `POST /api/publish/batch-atomic-pipelined` | Parallel, multi-channel | Cross-channel, max throughput |
+
+### Usage from Java
+
+```java
+@Autowired RacerPipelinedPublisher pipelinedPublisher;
+
+List<String> payloads = IntStream.range(0, 1000)
+    .mapToObj(i -> "event-" + i)
+    .toList();
+
+pipelinedPublisher.publishBatch("racer:orders", payloads, "producer")
+    .doOnNext(counts -> log.info("Sent {} messages", counts.size()))
+    .subscribe();
+```
+
+Cross-channel pipelined batch:
+```java
+var items = List.of(
+    new RacerPipelinedPublisher.PipelineItem("racer:orders",  "order-1",   "checkout"),
+    new RacerPipelinedPublisher.PipelineItem("racer:audit",   "audit-1",   "checkout"),
+    new RacerPipelinedPublisher.PipelineItem("racer:metrics", "metric-1",  "checkout")
+);
+pipelinedPublisher.publishItems(items).subscribe();
+```
+
+### Using pipelined mode in `RacerTransaction`
+
+```java
+transaction.execute(tx -> {
+    tx.publish("orders",  "order-1");
+    tx.publish("audit",   "audit-1");
+}, /* pipelined = */ true);  // all PUBLISH calls go through RacerPipelinedPublisher
+```
+
+> See [Tutorial 17](TUTORIALS.md#tutorial-17--pipelined-batch-publishing) for a full walkthrough.
+
+---
+
+## Message Priority
+
+> **R-10 — Message Priority Queuing**
+
+RacerMQ implements priority via separate Pub/Sub **sub-channels**, one per priority level. Publishers route messages to `{channel}:priority:{LEVEL}` and consumers drain messages from highest-priority channels first.
+
+### Priority levels (`PriorityLevel` enum)
+
+| Level | Weight | Sub-channel suffix |
+|-------|--------|-------------------|
+| `HIGH` | 0 | `:priority:HIGH` |
+| `NORMAL` | 1 | `:priority:NORMAL` |
+| `LOW` | 2 | `:priority:LOW` |
+
+Lower weight = higher priority. Custom levels can be declared in `racer.priority.levels`.
+
+### Server-side publishing
+
+```properties
+# racer-server/application.properties
+racer.priority.enabled=true
+racer.priority.levels=HIGH,NORMAL,LOW
+racer.priority.channels=orders,notifications
+```
+
+```bash
+curl -X POST http://localhost:8080/api/publish/async \
+  -H "Content-Type: application/json" \
+  -d '{"channel":"racer:orders","payload":"urgent order","sender":"checkout","priority":"HIGH"}'
+```
+
+This publishes to `racer:orders:priority:HIGH`.
+
+### Client-side consumption
+
+```properties
+# racer-client/application.properties
+racer.priority.enabled=true
+racer.priority.levels=HIGH,NORMAL,LOW
+racer.priority.strategy=strict
+racer.priority.channels=racer:orders,racer:notifications
+```
+
+`RacerPriorityConsumerService` (auto-configured when `racer.priority.enabled=true`) subscribes to all priority sub-channels, buffers incoming messages in a `PriorityBlockingQueue`, and drains them in strict weight order:
+1. All `HIGH` messages are processed before any `NORMAL` messages.
+2. All `NORMAL` messages are processed before any `LOW` messages.
+
+### `@RacerPriority` annotation
+
+```java
+@PublishResult(channelRef = "orders")
+@RacerPriority(defaultLevel = "HIGH")
+public RacerMessage submitOrder(OrderRequest req) {
+    return RacerMessage.create("racer:orders", toJson(req), "checkout", "HIGH");
+}
+```
+
+If the returned `RacerMessage.priority` is blank/null, `defaultLevel` from `@RacerPriority` is used as the fallback.
+
+> See [Tutorial 18](TUTORIALS.md#tutorial-18--message-priority-channels) for a full walkthrough.
+
+---
+
 ## End-to-End Flows
 
 ### Flow 1 — Fire-and-Forget (Pub/Sub async)
@@ -1725,9 +2067,9 @@ This section explains how it compares architecturally to dedicated message broke
 | **No cross-channel transactions** | Can't atomically publish to multiple channels | Sequential publish (at-most-once) | ✅ **Implemented** — `RacerTransaction` + `/api/publish/batch-atomic` (R-5) |
 | **Single Redis = single point of failure** | No built-in clustering at the broker level | Spring Data Redis supports Sentinel/Cluster natively | ✅ **Implemented** — `compose.sentinel.yaml` + `compose.cluster.yaml` (R-6) |
 | **No schema registry** | Raw JSON; no schema evolution guards | `@JsonTypeInfo` versioned DTOs | Future: `RacerSchemaValidator` interceptor |
-| **Limited consumer scaling** | One stream = one partition; no auto-rebalancing | Multiple consumer group members share 1 stream | Shard by key — `racer:orders:{hash}` + Redis Cluster hash slots |
-| **Throughput ceiling** | Redis single-threaded per shard; dedicated brokers win at millions of msg/sec | 100K+ msg/sec easily handled for most apps | Shard across Redis instances or graduate hot path to Kafka |
-| **No message priority** | FIFO only | Use `async=false` for critical channels | Separate channel per priority level |
+| **Limited consumer scaling** | One stream = one partition; no auto-rebalancing | Multiple consumer group members share 1 stream | ✅ **Implemented** — `racer.consumer.concurrency` + `RacerShardedStreamPublisher` (R-8) |
+| **Throughput ceiling** | Redis single-threaded per shard; dedicated brokers win at millions of msg/sec | 100K+ msg/sec easily handled for most apps | ✅ **Implemented** — `RacerPipelinedPublisher` + `/api/publish/batch-pipelined` (R-9) |
+| **No message priority** | FIFO only | Use `async=false` for critical channels | ✅ **Implemented** — `RacerPriorityPublisher` + `RacerPriorityConsumerService` (R-10) |
 
 ---
 
@@ -1887,3 +2229,93 @@ racer.retention.schedule-cron=0 0 * * * *
 | R-4 | Retention & Pruning | ✅ Done | `RacerRetentionService`, `/api/dlq/trim` |
 | R-5 | Atomic Batch Publish | ✅ Done | `RacerTransaction`, `/api/publish/batch-atomic` |
 | R-6 | HA — Sentinel + Cluster | ✅ Done | `compose.sentinel.yaml`, `compose.cluster.yaml` |
+| R-7 | Schema Registry | 🔮 Future | `RacerSchemaValidator` (planned) |
+| R-8 | Consumer Scaling + Sharding | ✅ Done | `racer.consumer.concurrency`, `RacerShardedStreamPublisher` |
+| R-9 | Throughput — Pipelining | ✅ Done | `RacerPipelinedPublisher`, `/api/publish/batch-pipelined` |
+| R-10 | Message Priority | ✅ Done | `RacerPriorityPublisher`, `RacerPriorityConsumerService` |
+
+---
+
+### ✅ R-8 — Consumer Scaling + Key-Based Sharding
+
+**Closes gap:** Limited consumer scaling — single hardcoded consumer per stream
+
+**Status:** **DONE**
+
+**What was implemented:**
+- `RacerProperties.ConsumerProperties` — `racer.consumer.concurrency`, `name-prefix`, `poll-batch-size`, `poll-interval-ms`
+- `RacerStreamConsumerService` refactored — spawns N consumers per stream (e.g. `consumer-0`, `consumer-1`, `consumer-2`), each as an independent polling subscription within the same consumer group; reads up to `poll-batch-size` entries per poll via the `COUNT` XREADGROUP argument
+- `StreamResponderService` — consumer name now derived from `racer.consumer.name-prefix` (no longer hardcoded)
+- `RacerShardedStreamPublisher` — shard-aware stream publisher; computes shard index via CRC-16/CCITT (same algorithm as Redis Cluster hash slots) modulo `racer.sharding.shard-count`; activated by `@ConditionalOnProperty(racer.sharding.enabled=true)`
+- `ShardingProperties` — `racer.sharding.enabled`, `shard-count`, `streams`
+
+**Configuration:**
+```properties
+racer.consumer.concurrency=3
+racer.consumer.name-prefix=consumer
+racer.consumer.poll-batch-size=10
+racer.consumer.poll-interval-ms=200
+
+racer.sharding.enabled=true
+racer.sharding.shard-count=4
+racer.sharding.streams=racer:orders:stream,racer:audit:stream
+```
+
+**Key files:** `RacerStreamConsumerService.java`, `RacerShardedStreamPublisher.java`, `RacerProperties.java`
+
+---
+
+### ✅ R-9 — Throughput Optimisation (Pipelining)
+
+**Closes gap:** Every publish is a separate Redis round-trip; `RacerTransaction` is sequential
+
+**Status:** **DONE**
+
+**What was implemented:**
+- `RacerPipelinedPublisher` — uses `Flux.mergeDelayError` to issue all PUBLISH commands concurrently; Lettuce (the reactive Redis driver) auto-pipelines concurrent commands over a single connection, reducing N round-trips to ~1
+- `publishBatch(channel, payloads, sender)` — publishes a list of payloads to the same channel in parallel
+- `publishItems(List<PipelineItem>)` — multi-channel pipeline batch (same behaviour as `RacerTransaction` but parallel)
+- `RacerTransaction` upgraded — accepts an optional `RacerPipelinedPublisher`; `execute(configurer)` auto-promotes to pipeline when available; new `execute(configurer, pipelined)` overload for explicit control
+- `PipelineProperties` — `racer.pipeline.enabled`, `max-batch-size`
+- New REST endpoints:
+  - `POST /api/publish/batch-pipelined` — parallel batch to single channel
+  - `POST /api/publish/batch-atomic-pipelined` — parallel multi-channel batch
+
+**Configuration:**
+```properties
+racer.pipeline.enabled=true
+racer.pipeline.max-batch-size=100
+```
+
+**Key files:** `RacerPipelinedPublisher.java`, `RacerTransaction.java`, `PublisherController.java`
+
+---
+
+### ✅ R-10 — Message Priority
+
+**Closes gap:** All channels are FIFO; no way to express message urgency
+
+**Status:** **DONE**
+
+**What was implemented:**
+- `PriorityLevel` enum — `HIGH(0)`, `NORMAL(1)`, `LOW(2)` with numeric weight; `PriorityLevel.of(name)` resolves by name with `NORMAL` fallback
+- `@RacerPriority` annotation — `defaultLevel` attribute for use alongside `@PublishResult`
+- `RacerMessage.priority` field — `String`, defaults to `"NORMAL"`; backward-compatible (missing field → `NORMAL`)
+- `RacerPriorityPublisher` — routes messages to sub-channels keyed `{baseChannel}:priority:{LEVEL}` (e.g. `racer:orders:priority:HIGH`)
+- `RacerPriorityConsumerService` (racer-client) — subscribes to all configured priority sub-channels; buffers arriving messages in a `PriorityBlockingQueue<PrioritizedMessage>` ordered by weight; a drain loop running on `Schedulers.boundedElastic()` processes messages in strict priority order; active only when `racer.priority.enabled=true`
+- `POST /api/publish/async` — accepts optional `"priority"` field; routes through `RacerPriorityPublisher` when present
+- `PriorityProperties` — `racer.priority.enabled`, `levels`, `strategy`, `channels`
+
+**Configuration:**
+```properties
+# server
+racer.priority.enabled=true
+racer.priority.levels=HIGH,NORMAL,LOW
+racer.priority.strategy=strict
+
+# client
+racer.priority.enabled=true
+racer.priority.channels=racer:orders,racer:notifications
+```
+
+**Key files:** `PriorityLevel.java`, `@RacerPriority.java`, `RacerPriorityPublisher.java`, `RacerPriorityConsumerService.java`

@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.connection.stream.*;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -38,7 +39,9 @@ public class StreamResponderService {
     private Disposable pollingSubscription;
     private final AtomicLong processedCount = new AtomicLong(0);
 
-    private static final String CONSUMER_NAME = "client-1";
+    /** Configurable via {@code racer.consumer.name-prefix} (default: {@code client}). */
+    @Value("${racer.consumer.name-prefix:client}-responder-0")
+    private String consumerName;
 
     public StreamResponderService(
             ReactiveRedisTemplate<String, String> redisTemplate,
@@ -97,7 +100,7 @@ public class StreamResponderService {
     @SuppressWarnings("unchecked")
     private Mono<Void> pollOnce() {
         return redisTemplate.opsForStream()
-                .read(Consumer.from(RedisChannels.STREAM_CONSUMER_GROUP, CONSUMER_NAME),
+                .read(Consumer.from(RedisChannels.STREAM_CONSUMER_GROUP, consumerName),
                         StreamOffset.create(RedisChannels.REQUEST_STREAM, ReadOffset.lastConsumed()))
                 .next()
                 .flatMap(record -> {
@@ -112,7 +115,7 @@ public class StreamResponderService {
                             .then(ackRecord(record))
                             .doOnSuccess(v -> processedCount.incrementAndGet());
                 })
-                .then(); // empty if no records available — loop continues
+                .then(); // empty when no records available — loop continues
     }
 
     private Mono<Void> processStreamRequest(String payloadJson, String replyTo) {

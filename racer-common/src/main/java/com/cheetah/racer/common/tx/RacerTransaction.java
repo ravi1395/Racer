@@ -1,7 +1,9 @@
 package com.cheetah.racer.common.tx;
 
+import com.cheetah.racer.common.publisher.RacerPipelinedPublisher;
 import com.cheetah.racer.common.publisher.RacerPublisherRegistry;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.lang.Nullable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -37,13 +39,25 @@ import java.util.function.Consumer;
 public class RacerTransaction {
 
     private final RacerPublisherRegistry registry;
+    @Nullable
+    private final RacerPipelinedPublisher pipelinedPublisher;
 
+    /** Construct without pipeline support (backward-compatible). */
     public RacerTransaction(RacerPublisherRegistry registry) {
-        this.registry = registry;
+        this(registry, null);
+    }
+
+    /** Construct with optional pipeline support (R-9). */
+    public RacerTransaction(RacerPublisherRegistry registry,
+                             @Nullable RacerPipelinedPublisher pipelinedPublisher) {
+        this.registry           = registry;
+        this.pipelinedPublisher = pipelinedPublisher;
     }
 
     /**
-     * Builds and executes a batch publish.
+     * Builds and executes a batch publish using sequential {@link Flux#concat}.
+     * If a {@link RacerPipelinedPublisher} is wired and the entries all share the
+     * same channel, the batch is automatically promoted to pipelined mode.
      *
      * @param configurer lambda that registers one or more
      *                   {@link TxPublisher#publish(String, Object)} calls
@@ -52,9 +66,30 @@ public class RacerTransaction {
     public Mono<List<Long>> execute(Consumer<TxPublisher> configurer) {
         TxPublisher tx = new TxPublisher(registry);
         configurer.accept(tx);
-        return tx.commit()
+        return tx.commit(pipelinedPublisher)
                 .doOnSuccess(results ->
                         log.debug("[racer-tx] Batch complete — {} channel(s)", results.size()))
+                .doOnError(ex ->
+                        log.error("[racer-tx] Batch publish failed: {}", ex.getMessage()));
+    }
+
+    /**
+     * Builds and executes a batch publish, explicitly choosing sequential vs pipelined
+     * mode regardless of the auto-configuration.
+     *
+     * @param configurer lambda that registers publish calls
+     * @param pipelined  {@code true} to use parallel merging (pipelining),
+     *                   {@code false} to use sequential concat (original behaviour)
+     * @return {@code Mono<List<Long>>}
+     */
+    public Mono<List<Long>> execute(Consumer<TxPublisher> configurer, boolean pipelined) {
+        TxPublisher tx = new TxPublisher(registry);
+        configurer.accept(tx);
+        RacerPipelinedPublisher pub = pipelined ? pipelinedPublisher : null;
+        return tx.commit(pub)
+                .doOnSuccess(results ->
+                        log.debug("[racer-tx] Batch complete ({}) — {} channel(s)",
+                                pipelined ? "pipelined" : "sequential", results.size()))
                 .doOnError(ex ->
                         log.error("[racer-tx] Batch publish failed: {}", ex.getMessage()));
     }
@@ -85,10 +120,25 @@ public class RacerTransaction {
             entries.add(new PublishEntry(alias, payload, sender));
         }
 
-        Mono<List<Long>> commit() {
+        Mono<List<Long>> commit(@Nullable RacerPipelinedPublisher pipelinedPublisher) {
             if (entries.isEmpty()) {
                 return Mono.just(List.of());
             }
+
+            // When a pipelined publisher is available, build pipeline items and merge
+            if (pipelinedPublisher != null) {
+                List<RacerPipelinedPublisher.PipelineItem> items = entries.stream()
+                        .map(e -> {
+                            String channelName = registry.getPublisher(e.alias()).getChannelName();
+                            String sender      = e.sender() != null ? e.sender() : "racer";
+                            String payloadStr  = e.payload() instanceof String s ? s : e.payload().toString();
+                            return new RacerPipelinedPublisher.PipelineItem(channelName, payloadStr, sender);
+                        })
+                        .toList();
+                return pipelinedPublisher.publishItems(items);
+            }
+
+            // Default: sequential concat (original behaviour)
             List<Mono<Long>> ops = entries.stream()
                     .map(e -> e.sender != null
                             ? registry.getPublisher(e.alias()).publishAsync(e.payload, e.sender)

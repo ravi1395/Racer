@@ -79,4 +79,121 @@ public class RacerProperties {
 
     /** Retention / pruning configuration. */
     private RetentionProperties retention = new RetentionProperties();
+
+    // ── R-8: Consumer Scaling ────────────────────────────────────────────────
+
+    /**
+     * Consumer scaling settings for durable stream consumers.
+     * Mapped under {@code racer.consumer.*}.
+     */
+    @Data
+    public static class ConsumerProperties {
+
+        /**
+         * Number of concurrent consumer instances to spawn per stream.
+         * Each gets a unique name: {@code <namePrefix>-<index>}.
+         * Defaults to 1 (original behaviour).
+         */
+        private int concurrency = 1;
+
+        /** Prefix for generated consumer names within the consumer group. */
+        private String namePrefix = "consumer";
+
+        /**
+         * Maximum number of stream entries to read per poll (COUNT argument to XREADGROUP).
+         * Defaults to 1.
+         */
+        private int pollBatchSize = 1;
+
+        /** Interval in milliseconds between polls when the stream is empty. */
+        private long pollIntervalMs = 200;
+    }
+
+    /** Consumer scaling configuration. */
+    private ConsumerProperties consumer = new ConsumerProperties();
+
+    /**
+     * Key-based stream sharding settings.
+     * Mapped under {@code racer.sharding.*}.
+     */
+    @Data
+    public static class ShardingProperties {
+
+        /** When {@code true}, sharded publishing and consuming is active. */
+        private boolean enabled = false;
+
+        /**
+         * Number of shards (shard suffix 0 … N-1).
+         * Stream key becomes {@code <base>:<shardIndex>}.
+         */
+        private int shardCount = 4;
+
+        /**
+         * Comma-separated base stream keys to shard.
+         * E.g. {@code racer:orders:stream,racer:audit:stream}.
+         */
+        private String streams = "";
+    }
+
+    /** Sharding configuration (R-8). */
+    private ShardingProperties sharding = new ShardingProperties();
+
+    // ── R-9: Pipelining ──────────────────────────────────────────────────────
+
+    /**
+     * Pipeline/batch publish settings.
+     * Mapped under {@code racer.pipeline.*}.
+     */
+    @Data
+    public static class PipelineProperties {
+
+        /**
+         * When {@code true}, batch-publish operations use parallel reactive merging
+         * (Lettuce auto-pipelines concurrent commands) rather than sequential concat.
+         */
+        private boolean enabled = false;
+
+        /**
+         * Maximum number of messages to include in one pipelined batch.
+         * Batches larger than this are split.
+         */
+        private int maxBatchSize = 100;
+    }
+
+    /** Pipeline configuration (R-9). */
+    private PipelineProperties pipeline = new PipelineProperties();
+
+    // ── R-10: Priority Channels ───────────────────────────────────────────────
+
+    /**
+     * Priority channel settings.
+     * Mapped under {@code racer.priority.*}.
+     */
+    @Data
+    public static class PriorityProperties {
+
+        /** When {@code true}, priority sub-channels and consumer are active. */
+        private boolean enabled = false;
+
+        /**
+         * Comma-separated priority level names, ordered highest to lowest.
+         * Defaults to {@code HIGH,NORMAL,LOW}.
+         */
+        private String levels = "HIGH,NORMAL,LOW";
+
+        /**
+         * Drain strategy: {@code strict} (drain highest level completely before
+         * moving to the next) or {@code weighted} (proportional throughput per level).
+         */
+        private String strategy = "strict";
+
+        /**
+         * Comma-separated channel aliases on which priority sub-channels are activated.
+         * E.g. {@code orders,notifications}.
+         */
+        private String channels = "";
+    }
+
+    /** Priority configuration (R-10). */
+    private PriorityProperties priority = new PriorityProperties();
 }

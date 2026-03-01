@@ -3,14 +3,17 @@ package com.cheetah.racer.common.config;
 import com.cheetah.racer.common.aspect.PublishResultAspect;
 import com.cheetah.racer.common.metrics.RacerMetrics;
 import com.cheetah.racer.common.processor.RacerPublisherFieldProcessor;
+import com.cheetah.racer.common.publisher.RacerPipelinedPublisher;
+import com.cheetah.racer.common.publisher.RacerPriorityPublisher;
 import com.cheetah.racer.common.publisher.RacerPublisherRegistry;
+import com.cheetah.racer.common.publisher.RacerShardedStreamPublisher;
 import com.cheetah.racer.common.publisher.RacerStreamPublisher;
 import com.cheetah.racer.common.router.RacerRouterService;
 import com.cheetah.racer.common.tx.RacerTransaction;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.MeterRegistry;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
@@ -35,6 +38,9 @@ import java.util.Optional;
  *   <li>{@link RacerStreamPublisher} — durable stream publishing for {@code @PublishResult(durable=true)}</li>
  *   <li>{@link RacerRouterService} — content-based router scanning {@code @RacerRoute} beans</li>
  *   <li>{@link RacerTransaction} — atomic multi-channel publish via {@code Flux.concat}</li>
+ *   <li>{@link RacerPipelinedPublisher} — parallel batch publisher (R-9)</li>
+ *   <li>{@link RacerShardedStreamPublisher} (conditional) — shard-aware stream publisher (R-8)</li>
+ *   <li>{@link RacerPriorityPublisher} (conditional) — priority sub-channel publisher (R-10)</li>
  * </ul>
  */
 @Configuration
@@ -59,10 +65,9 @@ public class RacerAutoConfiguration {
     @Bean
     public PublishResultAspect publishResultAspect(
             RacerPublisherRegistry racerPublisherRegistry,
-            ReactiveRedisTemplate<String, String> reactiveStringRedisTemplate,
             RacerStreamPublisher racerStreamPublisher) {
 
-        return new PublishResultAspect(racerPublisherRegistry, reactiveStringRedisTemplate, racerStreamPublisher);
+        return new PublishResultAspect(racerPublisherRegistry, racerStreamPublisher);
     }
 
     @Bean
@@ -100,7 +105,45 @@ public class RacerAutoConfiguration {
     // ── Transaction support ──────────────────────────────────────────────────
 
     @Bean
-    public RacerTransaction racerTransaction(RacerPublisherRegistry racerPublisherRegistry) {
-        return new RacerTransaction(racerPublisherRegistry);
+    public RacerTransaction racerTransaction(RacerPublisherRegistry racerPublisherRegistry,
+                                              Optional<RacerPipelinedPublisher> pipelinedPublisher) {
+        return new RacerTransaction(racerPublisherRegistry, pipelinedPublisher.orElse(null));
+    }
+
+    // ── R-9: Pipelined batch publisher ───────────────────────────────────────
+
+    @Bean
+    public RacerPipelinedPublisher racerPipelinedPublisher(
+            RacerProperties racerProperties,
+            ReactiveRedisTemplate<String, String> reactiveStringRedisTemplate,
+            ObjectMapper objectMapper,
+            Optional<RacerMetrics> racerMetrics) {
+        return new RacerPipelinedPublisher(
+                reactiveStringRedisTemplate,
+                objectMapper,
+                racerProperties.getPipeline().getMaxBatchSize(),
+                racerMetrics.orElse(null));
+    }
+
+    // ── R-8: Sharded stream publisher (optional) ─────────────────────────────
+
+    @Bean
+    @ConditionalOnProperty(name = "racer.sharding.enabled", havingValue = "true")
+    public RacerShardedStreamPublisher racerShardedStreamPublisher(
+            RacerProperties racerProperties,
+            RacerStreamPublisher racerStreamPublisher) {
+        return new RacerShardedStreamPublisher(
+                racerStreamPublisher,
+                racerProperties.getSharding().getShardCount());
+    }
+
+    // ── R-10: Priority publisher (optional) ─────────────────────────────────
+
+    @Bean
+    @ConditionalOnProperty(name = "racer.priority.enabled", havingValue = "true")
+    public RacerPriorityPublisher racerPriorityPublisher(
+            ReactiveRedisTemplate<String, String> reactiveStringRedisTemplate,
+            ObjectMapper objectMapper) {
+        return new RacerPriorityPublisher(reactiveStringRedisTemplate, objectMapper);
     }
 }

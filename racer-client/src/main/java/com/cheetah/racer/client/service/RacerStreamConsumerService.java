@@ -12,9 +12,11 @@ import org.springframework.data.redis.connection.stream.*;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.stereotype.Service;
 import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
@@ -31,14 +33,20 @@ import java.util.concurrent.atomic.AtomicLong;
  * <h3>Stream key discovery</h3>
  * Stream keys are listed in {@code racer.durable.stream-keys} (comma-separated).
  * Example: {@code racer.durable.stream-keys=racer:orders:stream,racer:audit:stream}
+ *
+ * <h3>Consumer Scaling (R-8)</h3>
+ * <pre>
+ * racer.consumer.concurrency=3          # spawn 3 consumers per stream
+ * racer.consumer.name-prefix=consumer   # names: consumer-0, consumer-1, consumer-2
+ * racer.consumer.poll-batch-size=10     # read up to 10 entries per poll
+ * racer.consumer.poll-interval-ms=200   # ms between polls when stream is empty
+ * </pre>
  */
 @Slf4j
 @Service
 public class RacerStreamConsumerService {
 
-    private static final String CONSUMER_GROUP  = "racer-durable-consumers";
-    private static final String CONSUMER_NAME   = "racer-durable-consumer-1";
-    private static final Duration POLL_INTERVAL = Duration.ofMillis(200);
+    private static final String CONSUMER_GROUP = "racer-durable-consumers";
 
     private final ReactiveRedisTemplate<String, String> redisTemplate;
     private final ObjectMapper objectMapper;
@@ -52,7 +60,21 @@ public class RacerStreamConsumerService {
     @Value("${racer.client.processing-mode:ASYNC}")
     private String processingMode;
 
-    private Disposable pollingSubscription;
+    // R-8: consumer scaling properties -------------------------------------
+    @Value("${racer.consumer.concurrency:1}")
+    private int concurrency;
+
+    @Value("${racer.consumer.name-prefix:consumer}")
+    private String consumerNamePrefix;
+
+    @Value("${racer.consumer.poll-batch-size:1}")
+    private int pollBatchSize;
+
+    @Value("${racer.consumer.poll-interval-ms:200}")
+    private long pollIntervalMs;
+    // -----------------------------------------------------------------------
+
+    private final List<Disposable> pollingSubscriptions = new ArrayList<>();
     private final AtomicLong processedCount = new AtomicLong(0);
     private final AtomicLong failedCount    = new AtomicLong(0);
 
@@ -78,23 +100,36 @@ public class RacerStreamConsumerService {
             return;
         }
 
-        log.info("[DURABLE-CONSUMER] Starting for streams: {}", streamKeys);
-        streamKeys.forEach(key ->
-                ensureConsumerGroup(key)
-                        .doOnSuccess(v -> log.info("[DURABLE-CONSUMER] Group '{}' ready on '{}'", CONSUMER_GROUP, key))
-                        .doOnError(e -> log.error("[DURABLE-CONSUMER] Failed to init group on '{}': {}", key, e.getMessage()))
-                        .subscribe());
+        Duration pollInterval = Duration.ofMillis(pollIntervalMs);
+        log.info("[DURABLE-CONSUMER] Starting. streams={} concurrency={} batchSize={} pollInterval={}ms",
+                streamKeys, concurrency, pollBatchSize, pollIntervalMs);
 
-        pollingSubscription = pollAllStreams(streamKeys)
-                .repeatWhen(flux -> flux.delayElements(POLL_INTERVAL))
-                .subscribe();
+        // Ensure consumer groups exist, then start N consumers per stream.
+        // Consumers are chained after group creation to avoid a race where a
+        // consumer polls before the group exists (NOGROUP error).
+        streamKeys.forEach(key -> {
+            ensureConsumerGroup(key)
+                    .doOnSuccess(v -> {
+                        log.info("[DURABLE-CONSUMER] Group '{}' ready on '{}'", CONSUMER_GROUP, key);
+                        for (int i = 0; i < concurrency; i++) {
+                            String consumerName = consumerNamePrefix + "-" + i;
+                            Disposable sub = pollStream(key, consumerName, pollInterval)
+                                    .subscribe(
+                                            n -> {},
+                                            ex -> log.error("[DURABLE-CONSUMER] Consumer '{}' on '{}' errored: {}",
+                                                    consumerName, key, ex.getMessage()));
+                            pollingSubscriptions.add(sub);
+                            log.info("[DURABLE-CONSUMER] Consumer '{}' started on '{}'", consumerName, key);
+                        }
+                    })
+                    .doOnError(e -> log.error("[DURABLE-CONSUMER] Failed to init group on '{}': {}", key, e.getMessage()))
+                    .subscribe();
+        });
     }
 
     @PreDestroy
     public void stop() {
-        if (pollingSubscription != null && !pollingSubscription.isDisposed()) {
-            pollingSubscription.dispose();
-        }
+        pollingSubscriptions.forEach(d -> { if (!d.isDisposed()) d.dispose(); });
         log.info("[DURABLE-CONSUMER] Stopped. Processed={}, Failed={}", processedCount.get(), failedCount.get());
     }
 
@@ -102,29 +137,31 @@ public class RacerStreamConsumerService {
     // Internal
     // -------------------------------------------------------------------------
 
-    private Mono<Void> pollAllStreams(List<String> streamKeys) {
-        return reactor.core.publisher.Flux.fromIterable(streamKeys)
-                .flatMap(this::pollOnce)
-                .then();
+    /**
+     * Creates an infinite polling loop for a single (stream, consumer) pair.
+     * Reads up to {@link #pollBatchSize} entries per poll, processes each, then
+     * delays by {@code pollInterval} before the next iteration.
+     */
+    private Flux<Void> pollStream(String streamKey, String consumerName, Duration pollInterval) {
+        return pollOnce(streamKey, consumerName)
+                .repeatWhen(flux -> flux.delayElements(pollInterval));
     }
 
-    @SuppressWarnings("unchecked")
-    private Mono<Void> pollOnce(String streamKey) {
+    private Flux<Void> pollOnce(String streamKey, String consumerName) {
         return redisTemplate.opsForStream()
-                .read(Consumer.from(CONSUMER_GROUP, CONSUMER_NAME),
+                .read(Consumer.from(CONSUMER_GROUP, consumerName),
+                        StreamReadOptions.empty().count(pollBatchSize),
                         StreamOffset.create(streamKey, ReadOffset.lastConsumed()))
-                .next()
                 .flatMap(record -> {
+                    @SuppressWarnings("unchecked")
                     Map<String, String> body = (Map<String, String>) (Map<?, ?>) record.getValue();
                     String data = body.get("data");
                     if (data == null) {
                         log.warn("[DURABLE-CONSUMER] Stream entry {} has no 'data' field — skipping", record.getId());
                         return ackRecord(streamKey, record.getId());
                     }
-
                     return processEntry(streamKey, record.getId(), data);
-                })
-                .then();
+                });
     }
 
     private Mono<Void> processEntry(String streamKey, RecordId recordId, String envelopeJson) {

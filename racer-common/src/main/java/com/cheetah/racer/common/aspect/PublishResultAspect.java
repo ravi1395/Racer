@@ -8,7 +8,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
-import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -35,14 +34,11 @@ import reactor.core.publisher.Mono;
 public class PublishResultAspect {
 
     private final RacerPublisherRegistry registry;
-    private final ReactiveRedisTemplate<String, String> redisTemplate;
     private final RacerStreamPublisher streamPublisher;
 
     public PublishResultAspect(RacerPublisherRegistry registry,
-                                ReactiveRedisTemplate<String, String> redisTemplate,
                                 RacerStreamPublisher streamPublisher) {
         this.registry        = registry;
-        this.redisTemplate   = redisTemplate;
         this.streamPublisher = streamPublisher;
     }
 
