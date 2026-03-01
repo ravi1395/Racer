@@ -1,0 +1,118 @@
+# ============================================================
+# Redis Sentinel High-Availability topology for Racer
+# ============================================================
+# Provides one primary + one replica + three Sentinel nodes.
+# Sentinel quorum = 2.
+#
+# Spring Boot connection (application.properties):
+#   spring.data.redis.sentinel.master=mymaster
+#   spring.data.redis.sentinel.nodes=localhost:26379,localhost:26380,localhost:26381
+#
+# Usage:
+#   docker compose -f compose.sentinel.yaml up -d
+#   docker compose -f compose.sentinel.yaml down -v
+# ============================================================
+
+services:
+
+  # ── Redis primary ─────────────────────────────────────────
+  redis-primary:
+    image: redis:7-alpine
+    container_name: racer-redis-primary
+    command: redis-server --save 60 1 --loglevel warning
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-primary-data:/data
+    networks:
+      - racer-sentinel-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── Redis replica ─────────────────────────────────────────
+  redis-replica:
+    image: redis:7-alpine
+    container_name: racer-redis-replica
+    command: redis-server --replicaof redis-primary 6379 --loglevel warning
+    depends_on:
+      redis-primary:
+        condition: service_healthy
+    networks:
+      - racer-sentinel-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── Sentinel 1 ────────────────────────────────────────────
+  sentinel-1:
+    image: redis:7-alpine
+    container_name: racer-sentinel-1
+    command: >
+      sh -c "
+        echo 'sentinel monitor mymaster redis-primary 6379 2' > /etc/sentinel.conf &&
+        echo 'sentinel down-after-milliseconds mymaster 5000'  >> /etc/sentinel.conf &&
+        echo 'sentinel failover-timeout mymaster 60000'        >> /etc/sentinel.conf &&
+        echo 'sentinel parallel-syncs mymaster 1'              >> /etc/sentinel.conf &&
+        redis-sentinel /etc/sentinel.conf
+      "
+    ports:
+      - "26379:26379"
+    depends_on:
+      redis-primary:
+        condition: service_healthy
+      redis-replica:
+        condition: service_healthy
+    networks:
+      - racer-sentinel-net
+
+  # ── Sentinel 2 ────────────────────────────────────────────
+  sentinel-2:
+    image: redis:7-alpine
+    container_name: racer-sentinel-2
+    command: >
+      sh -c "
+        echo 'sentinel monitor mymaster redis-primary 6379 2' > /etc/sentinel.conf &&
+        echo 'sentinel down-after-milliseconds mymaster 5000'  >> /etc/sentinel.conf &&
+        echo 'sentinel failover-timeout mymaster 60000'        >> /etc/sentinel.conf &&
+        echo 'sentinel parallel-syncs mymaster 1'              >> /etc/sentinel.conf &&
+        redis-sentinel /etc/sentinel.conf
+      "
+    ports:
+      - "26380:26379"
+    depends_on:
+      redis-primary:
+        condition: service_healthy
+    networks:
+      - racer-sentinel-net
+
+  # ── Sentinel 3 ────────────────────────────────────────────
+  sentinel-3:
+    image: redis:7-alpine
+    container_name: racer-sentinel-3
+    command: >
+      sh -c "
+        echo 'sentinel monitor mymaster redis-primary 6379 2' > /etc/sentinel.conf &&
+        echo 'sentinel down-after-milliseconds mymaster 5000'  >> /etc/sentinel.conf &&
+        echo 'sentinel failover-timeout mymaster 60000'        >> /etc/sentinel.conf &&
+        echo 'sentinel parallel-syncs mymaster 1'              >> /etc/sentinel.conf &&
+        redis-sentinel /etc/sentinel.conf
+      "
+    ports:
+      - "26381:26379"
+    depends_on:
+      redis-primary:
+        condition: service_healthy
+    networks:
+      - racer-sentinel-net
+
+volumes:
+  redis-primary-data:
+
+networks:
+  racer-sentinel-net:
+    driver: bridge

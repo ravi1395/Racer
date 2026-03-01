@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<parent>
+		<groupId>org.springframework.boot</groupId>
+		<artifactId>spring-boot-starter-parent</artifactId>
+		<version>3.4.3</version>
+		<relativePath/>
+	</parent>
+
+	<groupId>com.cheetah</groupId>
+	<artifactId>racer</artifactId>
+	<version>0.0.1-SNAPSHOT</version>
+	<packaging>pom</packaging>
+	<name>racer</name>
+	<description>Reactive Redis Messaging with Pub/Sub and Dead Letter Queue</description>
+
+	<properties>
+		<java.version>21</java.version>
+	</properties>
+
+	<modules>
+		<module>racer-common</module>
+		<module>racer-starter</module>
+		<module>racer-server</module>
+		<module>racer-client</module>
+	</modules>
+
+	<dependencyManagement>
+		<dependencies>
+			<dependency>
+				<groupId>com.cheetah</groupId>
+				<artifactId>racer-common</artifactId>
+				<version>${project.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>com.cheetah</groupId>
+				<artifactId>racer-starter</artifactId>
+				<version>${project.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>com.cheetah</groupId>
+				<artifactId>racer-server</artifactId>
+				<version>${project.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>com.cheetah</groupId>
+				<artifactId>racer-client</artifactId>
+				<version>${project.version}</version>
+			</dependency>
+		</dependencies>
+	</dependencyManagement>
+
+</project>

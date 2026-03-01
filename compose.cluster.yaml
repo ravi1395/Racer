@@ -1,0 +1,161 @@
+# ============================================================
+# Redis Cluster topology for Racer (6 nodes: 3 primary + 3 replica)
+# ============================================================
+# Minimum viable cluster: 3 primaries required by Redis.
+# Each primary has 1 replica for failover.
+#
+# Spring Boot connection (application.properties):
+#   spring.data.redis.cluster.nodes=\
+#     localhost:7001,localhost:7002,localhost:7003,\
+#     localhost:7004,localhost:7005,localhost:7006
+#
+# IMPORTANT: Redis Cluster uses 16384 hash slots distributed across
+# the 3 primaries. Multi-key operations must use hash tags to land
+# on the same slot, e.g. racer:{orders}:dlq and racer:{orders}:stream.
+#
+# Usage:
+#   docker compose -f compose.cluster.yaml up -d
+#   # Wait ~10 s for cluster init, then verify:
+#   docker exec racer-cluster-1 redis-cli cluster info | grep cluster_state
+#   docker compose -f compose.cluster.yaml down -v
+# ============================================================
+
+services:
+
+  # ── Cluster node 1 (primary) ──────────────────────────────
+  redis-cluster-1:
+    image: redis:7-alpine
+    container_name: racer-cluster-1
+    command: >
+      redis-server
+        --port 7001
+        --cluster-enabled yes
+        --cluster-config-file nodes-7001.conf
+        --cluster-node-timeout 5000
+        --appendonly yes
+        --loglevel warning
+    ports:
+      - "7001:7001"
+    networks:
+      racer-cluster-net:
+        ipv4_address: 172.28.0.11
+
+  redis-cluster-2:
+    image: redis:7-alpine
+    container_name: racer-cluster-2
+    command: >
+      redis-server
+        --port 7002
+        --cluster-enabled yes
+        --cluster-config-file nodes-7002.conf
+        --cluster-node-timeout 5000
+        --appendonly yes
+        --loglevel warning
+    ports:
+      - "7002:7002"
+    networks:
+      racer-cluster-net:
+        ipv4_address: 172.28.0.12
+
+  redis-cluster-3:
+    image: redis:7-alpine
+    container_name: racer-cluster-3
+    command: >
+      redis-server
+        --port 7003
+        --cluster-enabled yes
+        --cluster-config-file nodes-7003.conf
+        --cluster-node-timeout 5000
+        --appendonly yes
+        --loglevel warning
+    ports:
+      - "7003:7003"
+    networks:
+      racer-cluster-net:
+        ipv4_address: 172.28.0.13
+
+  # ── Cluster node 4–6 (replicas) ───────────────────────────
+  redis-cluster-4:
+    image: redis:7-alpine
+    container_name: racer-cluster-4
+    command: >
+      redis-server
+        --port 7004
+        --cluster-enabled yes
+        --cluster-config-file nodes-7004.conf
+        --cluster-node-timeout 5000
+        --appendonly yes
+        --loglevel warning
+    ports:
+      - "7004:7004"
+    networks:
+      racer-cluster-net:
+        ipv4_address: 172.28.0.14
+
+  redis-cluster-5:
+    image: redis:7-alpine
+    container_name: racer-cluster-5
+    command: >
+      redis-server
+        --port 7005
+        --cluster-enabled yes
+        --cluster-config-file nodes-7005.conf
+        --cluster-node-timeout 5000
+        --appendonly yes
+        --loglevel warning
+    ports:
+      - "7005:7005"
+    networks:
+      racer-cluster-net:
+        ipv4_address: 172.28.0.15
+
+  redis-cluster-6:
+    image: redis:7-alpine
+    container_name: racer-cluster-6
+    command: >
+      redis-server
+        --port 7006
+        --cluster-enabled yes
+        --cluster-config-file nodes-7006.conf
+        --cluster-node-timeout 5000
+        --appendonly yes
+        --loglevel warning
+    ports:
+      - "7006:7006"
+    networks:
+      racer-cluster-net:
+        ipv4_address: 172.28.0.16
+
+  # ── Cluster init (runs once, then exits) ──────────────────
+  redis-cluster-init:
+    image: redis:7-alpine
+    container_name: racer-cluster-init
+    depends_on:
+      - redis-cluster-1
+      - redis-cluster-2
+      - redis-cluster-3
+      - redis-cluster-4
+      - redis-cluster-5
+      - redis-cluster-6
+    entrypoint: >
+      sh -c "
+        sleep 5 &&
+        redis-cli --cluster create
+          172.28.0.11:7001
+          172.28.0.12:7002
+          172.28.0.13:7003
+          172.28.0.14:7004
+          172.28.0.15:7005
+          172.28.0.16:7006
+          --cluster-replicas 1
+          --cluster-yes
+      "
+    networks:
+      - racer-cluster-net
+
+networks:
+  racer-cluster-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24

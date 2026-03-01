@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<parent>
+		<groupId>com.cheetah</groupId>
+		<artifactId>racer</artifactId>
+		<version>0.0.1-SNAPSHOT</version>
+	</parent>
+
+	<artifactId>racer-starter</artifactId>
+	<name>racer-starter</name>
+	<description>
+		Spring Boot Starter for Racer reactive Redis messaging.
+		Add this single dependency to any Spring Boot project to get:
+		  - @EnableRacer, @RacerPublisher, @PublishResult annotations
+		  - Multi-channel property-driven RacerChannelPublisher infrastructure
+		  - RacerMessage, RacerRequest, RacerReply, DeadLetterMessage models
+		  - ReactiveRedisTemplate pre-configured beans
+	</description>
+
+	<!--
+	  This is a "starter" module — it has NO code of its own.
+	  It simply aggregates the correct transitive dependencies so that
+	  a consumer only needs one <dependency> block.
+	-->
+
+	<dependencies>
+		<!-- Core library: annotations, models, config, publisher framework -->
+		<dependency>
+			<groupId>com.cheetah</groupId>
+			<artifactId>racer-common</artifactId>
+		</dependency>
+
+		<!-- Reactive Redis — the transport layer -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-data-redis-reactive</artifactId>
+		</dependency>
+
+		<!-- AOP for @PublishResult interception -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-aop</artifactId>
+		</dependency>
+
+		<!-- Jackson JSR-310 for Instant/LocalDateTime serialisation -->
+		<dependency>
+			<groupId>com.fasterxml.jackson.datatype</groupId>
+			<artifactId>jackson-datatype-jsr310</artifactId>
+		</dependency>
+	</dependencies>
+
+	<!-- No spring-boot-maven-plugin — this is a plain library JAR -->
+
+</project>
