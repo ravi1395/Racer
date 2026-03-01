@@ -63,6 +63,14 @@ public class ConsumerSubscriber {
     @Value("${racer.client.processing-mode:ASYNC}")
     private String initialMode;
 
+    /**
+     * Max number of messages processed concurrently on the Pub/Sub path.
+     * Controls the flatMap concurrency argument. Set to 1 for strictly serial processing.
+     * Defaults to 256 (Reactor default) for maximum throughput.
+     */
+    @Value("${racer.pubsub.concurrency:256}")
+    private int pubsubConcurrency;
+
     public ConsumerSubscriber(
             ReactiveRedisMessageListenerContainer listenerContainer,
             @Qualifier("syncProcessor") MessageProcessor syncProcessor,
@@ -100,12 +108,13 @@ public class ConsumerSubscriber {
      * Subscribe to the main message channel.
      */
     private void subscribeToMessages() {
+        int concurrency = Math.max(1, pubsubConcurrency);
         messageSubscription = listenerContainer
                 .receive(ChannelTopic.of(RedisChannels.MESSAGE_CHANNEL))
-                .flatMap(this::handleMessage)
+                .flatMap(this::handleMessage, concurrency)
                 .subscribe();
 
-        log.info("Subscribed to channel: {}", RedisChannels.MESSAGE_CHANNEL);
+        log.info("Subscribed to channel: {} (concurrency={})", RedisChannels.MESSAGE_CHANNEL, concurrency);
     }
 
     /**

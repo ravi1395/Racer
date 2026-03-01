@@ -279,4 +279,45 @@ public class RacerProperties {
 
     /** Schema registry configuration (R-7). */
     private SchemaProperties schema = new SchemaProperties();
+
+    // ── R-11: Polling ──────────────────────────────────────────────────────
+
+    /**
+     * Polling properties.
+     * Mapped under {@code racer.poll.*}.
+     */
+    @Data
+    public static class PollProperties {
+
+        /**
+         * When {@code false}, all {@code @RacerPoll} pollers are silently skipped at startup.
+         * Defaults to {@code true} — pollers are active whenever the annotation is present.
+         */
+        private boolean enabled = true;
+    }
+
+    /** Polling configuration (R-11). */
+    private PollProperties poll = new PollProperties();
+
+    // ── Pub/Sub concurrency ──────────────────────────────────────────────
+
+    /**
+     * Pub/Sub consumer concurrency settings.
+     * Mapped under {@code racer.pubsub.*}.
+     */
+    @Data
+    public static class PubSubProperties {
+
+        /**
+         * Maximum number of messages processed concurrently by the Pub/Sub
+         * consumer ({@code ConsumerSubscriber}). Controls the {@code flatMap}
+         * concurrency argument. Set to {@code 256} (Reactor default) for
+         * maximum throughput or lower (e.g. {@code 1}) for strictly serial
+         * processing. Defaults to {@code 256}.
+         */
+        private int concurrency = 256;
+    }
+
+    /** Pub/Sub consumer concurrency configuration. */
+    private PubSubProperties pubsub = new PubSubProperties();
 }

@@ -2,6 +2,7 @@ package com.cheetah.racer.common.config;
 
 import com.cheetah.racer.common.aspect.PublishResultAspect;
 import com.cheetah.racer.common.metrics.RacerMetrics;
+import com.cheetah.racer.common.poll.RacerPollRegistrar;
 import com.cheetah.racer.common.processor.RacerPublisherFieldProcessor;
 import com.cheetah.racer.common.publisher.RacerPipelinedPublisher;
 import com.cheetah.racer.common.publisher.RacerPriorityPublisher;
@@ -166,5 +167,15 @@ public class RacerAutoConfiguration {
             ResourceLoader resourceLoader,
             ObjectMapper objectMapper) {
         return new RacerSchemaRegistry(racerProperties, resourceLoader, objectMapper);
+    }
+
+    // ── R-11: Polling registrar (@RacerPoll processor) ───────────────────
+
+    @Bean
+    public RacerPollRegistrar racerPollRegistrar(
+            RacerPublisherRegistry racerPublisherRegistry,
+            ObjectMapper objectMapper,
+            Optional<RacerMetrics> racerMetrics) {
+        return new RacerPollRegistrar(racerPublisherRegistry, objectMapper, racerMetrics.orElse(null));
     }
 }

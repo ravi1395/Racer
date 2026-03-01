@@ -18,7 +18,8 @@ A multi-module Spring Boot application demonstrating reactive Redis messaging pa
 - **Retention Service** — scheduled `XTRIM` + DLQ age-based eviction
 - **High Availability** — Sentinel and Cluster Docker Compose topologies included
 
-> **New to Racer?** Start with the **[Tutorials →](TUTORIALS.md)** for step-by-step walkthroughs of every feature.
+> **Building a new service?** Follow the **[New App from Scratch →](TUTORIAL-NEW-APP.md)** guide for a complete end-to-end walkthrough.
+> **Want feature-level tutorials?** Browse the **[Tutorials →](TUTORIALS.md)** for step-by-step walkthroughs of every feature.
 
 ---
 
@@ -35,6 +36,7 @@ A multi-module Spring Boot application demonstrating reactive Redis messaging pa
    - [@PublishResult — method-level auto-publish](#publishresult--method-level-auto-publish)
    - [@RacerRoute — content-based routing](#racerroute--content-based-routing)
    - [@RacerPriority — message priority routing](#racerpriority--message-priority-routing)
+   - [@RacerPoll — scheduled publishing](#racerpoll--scheduled-publishing)
    - [Multi-channel configuration](#multi-channel-configuration)
 7. [Redis Keys & Channels Reference](#redis-keys--channels-reference)
 8. [Message Schemas](#message-schemas)
@@ -278,6 +280,7 @@ java -jar racer-client/target/racer-client-0.0.1-SNAPSHOT.jar
 | `racer.priority.levels` | `HIGH,NORMAL,LOW` | Comma-separated priority level names, highest first (R-10) |
 | `racer.priority.strategy` | `strict` | Drain strategy: `strict` or `weighted` (R-10) |
 | `racer.priority.channels` | — | Comma-separated channel aliases eligible for priority routing (R-10) |
+| `racer.poll.enabled` | `true` | Enable/disable all `@RacerPoll` pollers (R-11) |
 | `management.endpoints.web.exposure.include` | `health,info` | Actuator endpoints to expose (add `metrics,prometheus`) |
 | `management.metrics.tags.application` | — | Tag all metrics with app name |
 | `logging.level.com.cheetah.racer` | `DEBUG` | Log level |
@@ -309,6 +312,8 @@ java -jar racer-client/target/racer-client-0.0.1-SNAPSHOT.jar
 | `racer.priority.levels` | `HIGH,NORMAL,LOW` | Priority level names (R-10) |
 | `racer.priority.strategy` | `strict` | `strict` (drain high first) or `weighted` (R-10) |
 | `racer.priority.channels` | — | Comma-separated base Redis channel names to subscribe with priority (R-10) |
+| `racer.pubsub.concurrency` | `256` | Max in-flight Pub/Sub messages processed concurrently (R-11) |
+| `racer.poll.enabled` | `true` | Enable/disable all `@RacerPoll` pollers (R-11) |
 | `management.endpoints.web.exposure.include` | `health,info` | Actuator endpoints to expose (add `metrics,prometheus`) |
 | `logging.level.com.cheetah.racer` | `DEBUG` | Log level |
 
@@ -534,6 +539,58 @@ racer.priority.levels=HIGH,NORMAL,LOW
 racer.priority.strategy=strict
 racer.priority.channels=racer:orders,racer:notifications
 ```
+
+---
+
+### `@RacerPoll` — scheduled publishing
+
+Annotate a no-arg method in any Spring bean to publish its return value to a Racer channel on a fixed schedule or cron expression. The method handles all data fetching or computation — `@RacerPoll` only deals with the scheduling and the publish destination.
+
+**Fixed-rate example:**
+```java
+@Component
+public class InventoryPoller {
+
+    @RacerPoll(
+        fixedRate = 30_000,              // every 30 seconds
+        channel   = "racer:inventory",
+        sender    = "inventory-poller"
+    )
+    public String fetchInventory() {
+        // Your code fetches the data however you like
+        return restClient.get("https://api.example.com/inventory");
+    }
+}
+```
+
+**Cron-based example with reactive return type:**
+```java
+@RacerPoll(
+    cron       = "0 0/5 * * * *",       // every 5 minutes
+    channelRef = "pricing",
+    sender     = "price-poller"
+)
+public Mono<String> fetchPrices() {
+    return webClient.get()
+            .uri("https://api.example.com/prices")
+            .retrieve()
+            .bodyToMono(String.class);
+}
+```
+
+**`@RacerPoll` attributes**
+
+| Attribute | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `fixedRate` | `long` | `10000` | Polling interval in milliseconds (ignored when `cron` is set) |
+| `initialDelay` | `long` | `0` | Delay before first poll (ms) |
+| `cron` | `String` | `""` | Spring cron expression (overrides `fixedRate` when non-empty) |
+| `channel` | `String` | `""` | Direct Redis channel name to publish to |
+| `channelRef` | `String` | `""` | Channel alias from `racer.channels.<alias>` |
+| `sender` | `String` | `"racer-poller"` | Sender label on published messages |
+| `async` | `boolean` | `true` | Whether to publish asynchronously |
+
+**Supported return types:** `String` (as-is), any serializable object (JSON-encoded), `Mono<?>` (subscribed to), `void`/`null` (nothing published).
 
 ---
 
@@ -2030,12 +2087,16 @@ This section explains how it compares architecturally to dedicated message broke
 | **Core** | Library on Redis | Dedicated broker (Erlang) | Dedicated broker (Java/JMS) | Distributed commit log |
 | **Protocol** | Redis Pub/Sub + Streams | AMQP 0-9-1, MQTT, STOMP | JMS, AMQP 1.0, STOMP | Custom binary protocol |
 | **Deployment** | Redis (already in most stacks) | Separate cluster | Separate cluster | Multi-node cluster + ZooKeeper/KRaft |
-| **Persistence** | Redis Streams + Lists (DLQ) | Per-queue on disk | KahaDB / JDBC | Disk-backed partitioned log |
-| **Routing** | Flat channel names, manual fan-out | Exchanges → bindings → queues | Destinations, virtual topics | Topics → partitions |
-| **Consumer groups** | Redis `XREADGROUP` | Competing consumers on a queue | JMS shared subscriptions | Native consumer groups |
-| **Message ordering** | Per-stream (single partition) | Per-queue | Per-queue | Per-partition |
-| **Backpressure** | Project Reactor operators | Channel-level QoS prefetch | JMS prefetch | Consumer fetch size |
+| **Persistence** | Redis Streams + Lists (DLQ) with configurable XTRIM retention | Per-queue on disk | KahaDB / JDBC | Disk-backed partitioned log |
+| **Routing** | `@RacerRoute` content-based routing + multi-channel fan-out | Exchanges → bindings → queues | Destinations, virtual topics | Topics → partitions |
+| **Consumer groups** | Redis `XREADGROUP` + configurable concurrency + key-based sharding | Competing consumers on a queue | JMS shared subscriptions | Native consumer groups + partition rebalancing |
+| **Message ordering** | Per-stream (single partition); strict priority drain within a channel | Per-queue | Per-queue | Per-partition |
+| **Message priority** | ✅ `HIGH` / `NORMAL` / `LOW` sub-channels (`@RacerPriority`) | ✅ Native queue priority (0–255) | ✅ JMS message priority | ❌ No native priority; workaround: multiple topics |
+| **Schema validation** | ✅ JSON Schema Draft-07 via `RacerSchemaRegistry` (opt-in) | ⚠️ Plugin or custom validator | ❌ No built-in | ✅ Confluent Schema Registry (Avro/JSON/Protobuf) |
+| **Backpressure** | Project Reactor operators + configurable poll-batch-size | Channel-level QoS prefetch | JMS prefetch | Consumer fetch size |
+| **Batch / pipeline publish** | ✅ `RacerPipelinedPublisher` (parallel) + `RacerTransaction` (ordered) | ⚠️ Publisher confirms, no true pipelining | ❌ Per-message send | ✅ Producer batching + linger.ms |
 | **Reactive first-class** | ✅ Project Reactor end-to-end | ⚠️ Reactor RabbitMQ wrapper | ❌ Blocking JMS | ⚠️ Reactor Kafka wrapper |
+| **High availability** | ✅ Redis Sentinel + Cluster (Docker Compose provided) | ✅ Mirrored queues / quorum queues | ✅ KahaDB replication | ✅ Native partition replication |
 | **Deployment complexity** | Low (Redis + Spring Boot) | Medium (broker + management plugin) | Medium (broker + plugins) | High (brokers + ZooKeeper/KRaft) |
 
 ---
@@ -2051,25 +2112,33 @@ This section explains how it compares architecturally to dedicated message broke
 | **Embeddable as a library** | Ships as a Spring Boot starter JAR — import and go, no sidecar or agent. |
 | **Request-reply built in** | First-class two-way communication over both Pub/Sub (ephemeral) and Streams (durable). |
 | **Dual transport** | Same framework for fire-and-forget (Pub/Sub) and durable (Streams). No second system needed. |
-| **Tiny footprint** | `racer-common` is 35 KB. Easy to audit, fork, and extend. |
+| **Content-based routing** | `@RacerRoute` + `@RacerRouteRule` — declarative regex-pattern fan-out to named channels with zero routing code in business logic. |
+| **Message priority** | `@RacerPriority` + `RacerPriorityConsumerService` — `HIGH`/`NORMAL`/`LOW` sub-channels with strict-order drain; no separate queue infrastructure needed. |
+| **Pipelined batch publish** | `RacerPipelinedPublisher` issues all commands concurrently over a single Lettuce connection, collapsing N round-trips into ~1 for maximum throughput. |
+| **Consumer sharding** | `RacerShardedStreamPublisher` distributes messages across N streams by CRC-16 key hash; `racer.consumer.concurrency` scales readers per stream. |
+| **Schema validation** | `RacerSchemaRegistry` validates every message against a JSON Schema Draft-07 file at publish and consume time — opt-in via `racer.schema.enabled=true`. |
+| **Retention lifecycle** | `RacerRetentionService` automatically trims streams (`XTRIM MAXLEN`) and prunes stale DLQ entries on a configurable cron schedule. |
 | **Config-driven channels** | Add `racer.channels.payments.name=racer:payments` → channel exists at startup. No broker admin, no exchange bindings. |
+| **Tiny footprint** | `racer-common` is 35 KB. Easy to audit, fork, and extend. |
 
 ---
 
 ### Disadvantages & Mitigations
 
-| Disadvantage | Impact | Current Mitigation | Status |
-|-------------|--------|--------------------|--------|
+| Disadvantage | Impact | Mitigation | Status |
+|-------------|--------|------------|--------|
 | **No exchange/routing layer** | Flat channel names only; no wildcards, header routing, or fan-out exchanges | Route manually by publishing to multiple channels | ✅ **Implemented** — `@RacerRoute` + `RacerRouterService` (R-1) |
 | **Pub/Sub drops messages when no subscriber** | Messages lost if consumer is offline | Use Redis Streams for durable delivery | ✅ **Implemented** — `@PublishResult(durable=true)` + `RacerStreamConsumerService` (R-2) |
 | **No built-in monitoring** | No management UI | Redis `INFO`/`XINFO` via `redis-cli` | ✅ **Implemented** — `RacerMetrics` + Actuator + Prometheus/Grafana (R-3) |
 | **No message TTL / expiry** | Streams and DLQ grow indefinitely | `DELETE /api/dlq/clear` for manual cleanup | ✅ **Implemented** — `RacerRetentionService` — `@Scheduled` XTRIM + DLQ age pruning (R-4) |
 | **No cross-channel transactions** | Can't atomically publish to multiple channels | Sequential publish (at-most-once) | ✅ **Implemented** — `RacerTransaction` + `/api/publish/batch-atomic` (R-5) |
 | **Single Redis = single point of failure** | No built-in clustering at the broker level | Spring Data Redis supports Sentinel/Cluster natively | ✅ **Implemented** — `compose.sentinel.yaml` + `compose.cluster.yaml` (R-6) |
-| **No schema registry** | Raw JSON; no schema evolution guards | `@JsonTypeInfo` versioned DTOs | Future: `RacerSchemaValidator` interceptor |
+| **No schema registry** | Raw JSON; no schema evolution guards | `@JsonTypeInfo` versioned DTOs | ✅ **Implemented** — `RacerSchemaRegistry` JSON Schema Draft-07 validation on publish & consume paths; opt-in via `racer.schema.enabled=true`; REST API at `/api/schema` (R-7) |
 | **Limited consumer scaling** | One stream = one partition; no auto-rebalancing | Multiple consumer group members share 1 stream | ✅ **Implemented** — `racer.consumer.concurrency` + `RacerShardedStreamPublisher` (R-8) |
 | **Throughput ceiling** | Redis single-threaded per shard; dedicated brokers win at millions of msg/sec | 100K+ msg/sec easily handled for most apps | ✅ **Implemented** — `RacerPipelinedPublisher` + `/api/publish/batch-pipelined` (R-9) |
 | **No message priority** | FIFO only | Use `async=false` for critical channels | ✅ **Implemented** — `RacerPriorityPublisher` + `RacerPriorityConsumerService` (R-10) |
+| **No replay / offset seek** | Cannot re-read historical messages from an offset | Use `XRANGE` / `XREVRANGE` directly via `redis-cli` | ❌ Not planned — use Kafka when full replay is required |
+| **No exactly-once semantics** | At-least-once delivery; duplicate messages possible on consumer restart | Idempotent consumers (deduplicate on `RacerMessage.id`) | ❌ Not planned — Redis MULTI/EXEC does not span network partitions |
 
 ---
 
@@ -2081,20 +2150,25 @@ This section explains how it compares architecturally to dedicated message broke
 │  ✓ Redis is already in your stack                                            │
 │  ✓ You want reactive, non-blocking messaging without a separate broker       │
 │  ✓ You need sub-millisecond pub/sub + optional durability via Streams        │
+│  ✓ You want content-based routing, message priority, and schema validation   │
+│    without standing up a separate routing or schema-registry service         │
+│  ✓ You need pipelined batch publishing or key-based consumer sharding        │
 │  ✓ You want a library, not another infrastructure component to operate       │
 │  ✓ Team is small and operational simplicity is a priority                   │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │  Use RabbitMQ when...                                                        │
-│  ✓ You need sophisticated routing (topic exchanges, header-based routing)   │
-│  ✓ You need per-message TTL, priority queues, dead-letter exchanges          │
+│  ✓ You need per-message TTL, dead-letter exchanges, and quorum queues        │
 │  ✓ You need multi-protocol support (MQTT for IoT, STOMP for web clients)    │
 │  ✓ You want a management UI and alerting out of the box                     │
+│  ✓ You need sophisticated exchange bindings between many heterogeneous       │
+│    producers and consumers (topic, headers, fanout exchanges)                │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │  Use Apache Kafka when...                                                    │
-│  ✓ You need millions of messages/sec with horizontal scaling                 │
-│  ✓ You need replay (re-read historical messages by offset)                   │
-│  ✓ You need exactly-once semantics and transactions                          │
-│  ✓ You're building event-sourcing / CQRS architecture                       │
+│  ✓ You need millions of messages/sec with horizontal partition scaling       │
+│  ✓ You need full log replay (re-read historical messages by offset)          │
+│  ✓ You need exactly-once semantics and distributed transactions              │
+│  ✓ You're building event-sourcing / CQRS / stream-processing architecture   │
+│  ✓ You need a schema registry for Avro / Protobuf contract enforcement       │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │  Use ActiveMQ when...                                                        │
 │  ✓ You need JMS compliance for enterprise Java integration                   │
@@ -2107,7 +2181,7 @@ This section explains how it compares architecturally to dedicated message broke
 
 ## Roadmap & Implementation Status
 
-All six planned roadmap items have been **fully implemented**. Below is a summary of what was built for each item.
+All roadmap items have been **fully implemented**. Below is a summary of what was built for each item.
 
 ---
 
@@ -2233,6 +2307,7 @@ racer.retention.schedule-cron=0 0 * * * *
 | R-8 | Consumer Scaling + Sharding | ✅ Done | `racer.consumer.concurrency`, `RacerShardedStreamPublisher` |
 | R-9 | Throughput — Pipelining | ✅ Done | `RacerPipelinedPublisher`, `/api/publish/batch-pipelined` |
 | R-10 | Message Priority | ✅ Done | `RacerPriorityPublisher`, `RacerPriorityConsumerService` |
+| R-11 | Scheduled Publishing + Pub/Sub Concurrency | ✅ Done | `@RacerPoll`, `RacerPollRegistrar`, configurable `flatMap` concurrency |
 
 ---
 
@@ -2319,3 +2394,36 @@ racer.priority.channels=racer:orders,racer:notifications
 ```
 
 **Key files:** `PriorityLevel.java`, `@RacerPriority.java`, `RacerPriorityPublisher.java`, `RacerPriorityConsumerService.java`
+
+---
+
+### ✅ R-11 — Scheduled Publishing & Pub/Sub Concurrency Control
+
+**Closes gap:** No declarative way to trigger periodic data ingestion into Racer; Pub/Sub concurrency was hardcoded
+
+**Status:** **DONE**
+
+**What was implemented:**
+
+#### `@RacerPoll` — Scheduled Publishing
+- `@RacerPoll` annotation — marks a no-arg method as a scheduled publisher. The method handles all data fetching/computation; the annotation declares only the schedule (`fixedRate` / `cron`) and the destination (`channel` / `channelRef` / `sender`)
+- `RacerPollRegistrar` (BeanPostProcessor) — scans all Spring beans for `@RacerPoll` methods at startup; spins up a reactive `Flux.interval` (fixed-rate) or cron-matched ticker per method; invokes the annotated method, unwraps `Mono<?>` return types, and publishes the result to the configured Racer channel
+- Supports Spring property placeholders (`${…}`) in all string attributes
+- Return types: `String` (as-is), any serializable object (JSON), `Mono<?>` (unwrapped), `void`/`null` (skipped)
+- Metrics: `totalPolls` / `totalErrors` counters; optionally records via `RacerMetrics`
+- `PollProperties` — `racer.poll.enabled`
+
+#### Pub/Sub Concurrency Control
+- `ConsumerSubscriber` — `flatMap` concurrency now configurable via `racer.pubsub.concurrency` (default 256); controls how many Pub/Sub messages are processed in-flight simultaneously
+- `PubSubProperties` — `racer.pubsub.concurrency`
+
+**Configuration:**
+```properties
+# Pub/Sub concurrent processing (racer-client)
+racer.pubsub.concurrency=256
+
+# Enable/disable all @RacerPoll pollers
+racer.poll.enabled=true
+```
+
+**Key files:** `@RacerPoll.java`, `RacerPollRegistrar.java`, `RacerProperties.java`, `ConsumerSubscriber.java`
