@@ -119,18 +119,18 @@ cd inventory-service
 
     <dependencies>
         <!--
-          ┌─────────────────────────────────────────────────┐
-          │  racer-starter — one dependency for everything  │
-          │  Brings in:                                     │
-          │    • racer-common (annotations, models, config) │
-          │    • spring-boot-starter-data-redis-reactive    │
-          │    • spring-boot-starter-aop                    │
-          │    • jackson-datatype-jsr310                    │
-          └─────────────────────────────────────────────────┘
+          ┌──────────────────────────────────────────────────┐
+          │  racer — one dependency for everything           │
+          │  Brings in:                                      │
+          │    • annotations, models, auto-configuration     │
+          │    • spring-boot-starter-data-redis-reactive     │
+          │    • spring-boot-starter-aop                     │
+          │    • jackson-datatype-jsr310                     │
+          └──────────────────────────────────────────────────┘
         -->
         <dependency>
             <groupId>com.cheetah</groupId>
-            <artifactId>racer-starter</artifactId>
+            <artifactId>racer</artifactId>
             <version>0.0.1-SNAPSHOT</version>
         </dependency>
 
@@ -192,8 +192,8 @@ cd inventory-service
 </project>
 ```
 
-> **Why `racer-starter` and not `racer-common` directly?**
-> `racer-starter` is a zero-code aggregator (same pattern as Spring Boot starters) that
+> **Why `racer` and not `racer` directly?**
+> `racer` is a zero-code aggregator (same pattern as Spring Boot starters) that
 > pulls all required transitive dependencies in a single `<dependency>` block. It mirrors
 > what `spring-boot-starter-web` does: you don't add Tomcat, Jackson, and the web MVC
 > framework individually — the starter handles that for you.
@@ -244,7 +244,7 @@ management.endpoint.health.show-details=always
 // src/main/java/com/example/inventory/InventoryApplication.java
 package com.example.inventory;
 
-import com.cheetah.racer.common.annotation.EnableRacer;
+import com.cheetah.racer.annotation.EnableRacer;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
@@ -258,11 +258,11 @@ public class InventoryApplication {
 }
 ```
 
-> **`@EnableRacer` is optional** when using `racer-starter` because
+> **`@EnableRacer` is optional** when using `racer` because
 > `RacerAutoConfiguration` is registered automatically via
 > `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`.
 > Add it explicitly as self-documenting intent that your application uses the Racer
-> framework, or when you depend on `racer-common` directly instead of the starter.
+> framework, or when you depend on `racer` directly instead of the starter.
 
 ---
 
@@ -300,9 +300,9 @@ This is where the main features of Racer come together.
 // src/main/java/com/example/inventory/service/InventoryService.java
 package com.example.inventory.service;
 
-import com.cheetah.racer.common.annotation.PublishResult;
-import com.cheetah.racer.common.annotation.RacerPublisher;
-import com.cheetah.racer.common.publisher.RacerChannelPublisher;
+import com.cheetah.racer.annotation.PublishResult;
+import com.cheetah.racer.annotation.RacerPublisher;
+import com.cheetah.racer.publisher.RacerChannelPublisher;
 import com.example.inventory.model.InventoryItem;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
@@ -418,8 +418,8 @@ field pattern. No routing code is required inside your message processors.
 // src/main/java/com/example/inventory/router/InventoryEventRouter.java
 package com.example.inventory.router;
 
-import com.cheetah.racer.common.annotation.RacerRoute;
-import com.cheetah.racer.common.annotation.RacerRouteRule;
+import com.cheetah.racer.annotation.RacerRoute;
+import com.cheetah.racer.annotation.RacerRouteRule;
 import org.springframework.stereotype.Service;
 
 /**
@@ -454,8 +454,8 @@ maintain a live audit log — no manual container setup required.
 // src/main/java/com/example/inventory/service/InventoryAuditConsumer.java
 package com.example.inventory.service;
 
-import com.cheetah.racer.common.annotation.RacerListener;
-import com.cheetah.racer.common.model.RacerMessage;
+import com.cheetah.racer.annotation.RacerListener;
+import com.cheetah.racer.model.RacerMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -798,7 +798,7 @@ Once comfortably running, explore these Racer capabilities:
 |---|---|---|
 | `ExceptionInInitializerError: TypeTag :: UNKNOWN` | Maven is using JDK 24/25 | `export JAVA_HOME=$(/usr/libexec/java_home -v 21)` |
 | `Connection refused` on Redis | Redis not running | `docker compose -f /path/to/racer/compose.yaml up -d` |
-| `NoSuchBeanDefinitionException: RacerChannelPublisher` | `@EnableRacer` missing or `racer-starter` not on classpath | Check POM and add `@EnableRacer` to main class |
+| `NoSuchBeanDefinitionException: RacerChannelPublisher` | `@EnableRacer` missing or `racer` not on classpath | Check POM and add `@EnableRacer` to main class |
 | `@RacerPublisher` field is `null` at runtime | Bean is not a Spring-managed proxy (e.g. `new MyService()`) | Ensure the class is annotated `@Service` / `@Component` and obtained from the context |
 | `@PublishResult` not intercepting calls | AOP proxy not applied — bean called from within the same class | Move the `@PublishResult` method to a separate `@Service` bean |
 | Channel not found for alias | Alias missing in `application.properties` | Add `racer.channels.<alias>.name=...` |

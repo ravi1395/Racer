@@ -85,21 +85,17 @@ mvn clean install -DskipTests
 Expected output:
 ```
 [INFO] racer .............................................. SUCCESS
-[INFO] racer-common ....................................... SUCCESS
-[INFO] racer-starter ...................................... SUCCESS
-[INFO] racer-demo ......................................... SUCCESS
 [INFO] BUILD SUCCESS
 ```
 
-> **Library JARs installed to local Maven repo**
-> `mvn install` publishes all four modules to `~/.m2/repository/com/cheetah/`.
-> Any other project on your machine can now import `racer-starter` (which pulls in
-> `racer-common` and all required transitive dependencies) just by adding the
+> **Library JAR installed to local Maven repo**
+> `mvn install` publishes the library to `~/.m2/repository/com/cheetah/`.
+> Any other project on your machine can now import `racer` just by adding the
 > dependency below — no manual JAR copying needed:
 > ```xml
 > <dependency>
 >     <groupId>com.cheetah</groupId>
->     <artifactId>racer-starter</artifactId>
+>     <artifactId>racer</artifactId>
 >     <version>0.0.1-SNAPSHOT</version>
 > </dependency>
 > ```
@@ -110,10 +106,10 @@ Expected output:
 
 ### Step 3 — Run racer-demo
 
-In **Terminal B**:
+From the `../racer-demo/` directory in **Terminal B**:
 ```bash
 export JAVA_HOME=$(/usr/libexec/java_home -v 21)
-mvn -pl :racer-demo -am spring-boot:run
+mvn spring-boot:run
 ```
 
 You should see:
@@ -597,8 +593,8 @@ In `racer-demo`, create a `@Component` with an `@RacerResponder`-annotated metho
 ```java
 package com.cheetah.racer.demo.service;
 
-import com.cheetah.racer.common.annotation.RacerResponder;
-import com.cheetah.racer.common.model.RacerMessage;
+import com.cheetah.racer.annotation.RacerResponder;
+import com.cheetah.racer.model.RacerMessage;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 
@@ -627,8 +623,8 @@ public class EchoResponder {
 ```java
 package com.cheetah.racer.demo.client;
 
-import com.cheetah.racer.common.annotation.RacerClient;
-import com.cheetah.racer.common.annotation.RacerRequestReply;
+import com.cheetah.racer.annotation.RacerClient;
+import com.cheetah.racer.annotation.RacerRequestReply;
 import reactor.core.publisher.Mono;
 
 @RacerClient(timeout = 10)           // default timeout: 10 seconds
@@ -771,9 +767,9 @@ In `racer-demo`, declare a `@RacerResponder` with `transport = Transport.STREAM`
 ```java
 package com.cheetah.racer.demo.service;
 
-import com.cheetah.racer.common.annotation.RacerResponder;
-import com.cheetah.racer.common.annotation.Transport;
-import com.cheetah.racer.common.model.RacerMessage;
+import com.cheetah.racer.annotation.RacerResponder;
+import com.cheetah.racer.annotation.Transport;
+import com.cheetah.racer.model.RacerMessage;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 
@@ -798,9 +794,9 @@ public class StreamEchoResponder {
 ```java
 package com.cheetah.racer.demo.client;
 
-import com.cheetah.racer.common.annotation.RacerClient;
-import com.cheetah.racer.common.annotation.RacerRequestReply;
-import com.cheetah.racer.common.annotation.Transport;
+import com.cheetah.racer.annotation.RacerClient;
+import com.cheetah.racer.annotation.RacerRequestReply;
+import com.cheetah.racer.annotation.Transport;
 import reactor.core.publisher.Mono;
 
 @RacerClient(timeout = 15)
@@ -983,11 +979,11 @@ Response:
 
 > **Works in any project — not just racer-demo.**
 > The snippets below show `racer-demo` as the host, but they apply equally to any
-> Spring Boot application that has `racer-starter` on its classpath.
+> Spring Boot application that has `racer` on its classpath.
 > See [Tutorial 9](#tutorial-9--using-racer-as-a-library-in-a-new-project) for a
 > full new-project setup.
 
-Add this to any service that has `racer-starter` as a dependency:
+Add this to any service that has `racer` as a dependency:
 
 ```java
 @Service
@@ -1069,7 +1065,7 @@ By default, when a method annotated with `@PublishResult` returns `Flux<T>`, eac
 For high-throughput Flux pipelines, set `mode = ConcurrencyMode.CONCURRENT` to publish up to **N** elements to Redis simultaneously using reactive `flatMap`. The subscriber still receives every element downstream, but up to N Redis `PUBLISH` commands are in-flight at once:
 
 ```java
-import com.cheetah.racer.common.annotation.ConcurrencyMode;
+import com.cheetah.racer.annotation.ConcurrencyMode;
 
 @Service
 public class EventBroadcastService {
@@ -1112,7 +1108,7 @@ public class EventBroadcastService {
 Tutorial 1 complete.
 
 > **Using `application.properties` in an external project**
-> Everything in this tutorial applies verbatim to any project that imports `racer-starter`.
+> Everything in this tutorial applies verbatim to any project that imports `racer`.
 > Drop the same `racer.channels.*` properties into your own `application.properties`
 > and the channels are registered automatically — no configuration class needed.
 > See [Tutorial 9](#tutorial-9--using-racer-as-a-library-in-a-new-project) for a
@@ -1263,7 +1259,7 @@ public Mono<Payment> charge(ChargeRequest req) {
 }
 ```
 
-**Zero Java changes to `racer-common`** — the new channel exists purely through config.
+**Zero Java changes to `racer`** — the new channel exists purely through config.
 
 ---
 
@@ -1303,7 +1299,7 @@ Rules:
 
 ### What you'll learn
 - Create a brand-new Spring Boot application from scratch
-- Import `racer-starter` as a Maven dependency
+- Import `racer` as a Maven dependency
 - Configure channels in `application.properties`
 - Inject publishers with `@RacerPublisher`
 - Auto-publish return values with `@PublishResult`
@@ -1373,10 +1369,10 @@ my-racer-app/
     </properties>
 
     <dependencies>
-        <!-- Racer starter — brings in racer-common, reactive Redis, AOP, Jackson -->
+        <!-- Racer library — brings in reactive Redis, AOP, Jackson and auto-configuration -->
         <dependency>
             <groupId>com.cheetah</groupId>
-            <artifactId>racer-starter</artifactId>
+            <artifactId>racer</artifactId>
             <version>0.0.1-SNAPSHOT</version>
         </dependency>
 
@@ -1419,9 +1415,9 @@ my-racer-app/
 </project>
 ```
 
-> **Why `racer-starter` and not `racer-common` directly?**
-> `racer-starter` is a thin aggregator that also declares the transitive dependencies
-> (reactive Redis, AOP, Jackson) that `racer-common` needs.
+> **Why `racer` and not `racer` directly?**
+> `racer` is a thin aggregator that also declares the transitive dependencies
+> (reactive Redis, AOP, Jackson) that `racer` needs.
 > It mirrors the Spring Boot starter pattern — one line in your POM and you're done.
 
 ---
@@ -1458,7 +1454,7 @@ racer.channels.notifications.sender=my-notification-service
 ```java
 package com.example.myapp;
 
-import com.cheetah.racer.common.annotation.EnableRacer;
+import com.cheetah.racer.annotation.EnableRacer;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
@@ -1472,11 +1468,11 @@ public class MyRacerAppApplication {
 }
 ```
 
-> **`@EnableRacer` is optional** when `racer-starter` is on the classpath, because the
+> **`@EnableRacer` is optional** when `racer` is on the classpath, because the
 > `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports` file
 > registers `RacerAutoConfiguration` automatically.
 > Add it explicitly when you want self-documenting intent, or when your project
-> does not use the starter (e.g. you import `racer-common` directly).
+> does not use the starter (e.g. you import `racer` directly).
 
 ---
 
@@ -1485,9 +1481,9 @@ public class MyRacerAppApplication {
 ```java
 package com.example.myapp.service;
 
-import com.cheetah.racer.common.annotation.PublishResult;
-import com.cheetah.racer.common.annotation.RacerPublisher;
-import com.cheetah.racer.common.publisher.RacerChannelPublisher;
+import com.cheetah.racer.annotation.PublishResult;
+import com.cheetah.racer.annotation.RacerPublisher;
+import com.cheetah.racer.publisher.RacerChannelPublisher;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
@@ -1543,8 +1539,8 @@ public class OrderService {
 ```java
 package com.example.myapp.service;
 
-import com.cheetah.racer.common.annotation.RacerPublisher;
-import com.cheetah.racer.common.publisher.RacerChannelPublisher;
+import com.cheetah.racer.annotation.RacerPublisher;
+import com.cheetah.racer.publisher.RacerChannelPublisher;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
@@ -1734,12 +1730,12 @@ POST /api/broadcast
 
 | Symptom | Fix |
 |---------|-----|
-| `Could not find artifact com.cheetah:racer-starter` | Run `mvn clean install -DskipTests` inside the Racer repo first |
+| `Could not find artifact com.cheetah:racer` | Run `mvn clean install -DskipTests` inside the Racer repo first |
 | `@RacerPublisher` field is `null` at runtime | Ensure the bean is a Spring-managed `@Component`/`@Service` — not instantiated with `new` |
 | `@PublishResult` method never publishes | The method must be called via the Spring proxy (from another bean, not from within the same class) |
 | `WRONGTYPE Operation against a key` in Redis | A key was previously used as a different data type; flush with `redis-cli FLUSHDB` |
 | `Connection refused` on Redis | Redis is not running — `docker compose -f /path/to/racer/compose.yaml up -d` |
-| `@EnableRacer` not found | Add `racer-starter` (or `racer-common`) to your POM |
+| `@EnableRacer` not found | Add `racer` (or `racer`) to your POM |
 
 ---
 
@@ -2793,9 +2789,9 @@ In the `racer-demo` log, all `HIGH` messages should be processed before `NORMAL`
 In a service bean inside `racer-demo`:
 
 ```java
-import com.cheetah.racer.common.annotation.RacerPriority;
-import com.cheetah.racer.common.annotation.PublishResult;
-import com.cheetah.racer.common.model.RacerMessage;
+import com.cheetah.racer.annotation.RacerPriority;
+import com.cheetah.racer.annotation.PublishResult;
+import com.cheetah.racer.model.RacerMessage;
 
 @Service
 public class OrderService {
@@ -2880,13 +2876,13 @@ RacerListenerRegistrar (BeanPostProcessor)
 
 ### Step 1 — Receive the full message envelope
 
-Add this class to `racer-demo` (or any Spring Boot project with `racer-starter` on the classpath):
+Add this class to `racer-demo` (or any Spring Boot project with `racer` on the classpath):
 
 ```java
 package com.cheetah.racer.demo.service;
 
-import com.cheetah.racer.common.annotation.RacerListener;
-import com.cheetah.racer.common.model.RacerMessage;
+import com.cheetah.racer.annotation.RacerListener;
+import com.cheetah.racer.model.RacerMessage;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -2965,7 +2961,7 @@ redis-cli PUBLISH racer:orders \
 Use `mode = ConcurrencyMode.CONCURRENT` to process up to N messages in parallel:
 
 ```java
-import com.cheetah.racer.common.annotation.ConcurrencyMode;
+import com.cheetah.racer.annotation.ConcurrencyMode;
 
 @RacerListener(
     channel     = "racer:shipments",
@@ -3090,7 +3086,7 @@ curl -s http://localhost:8080/actuator/prometheus | grep racer_listener
 |---------|-----|
 | `@RacerListener` method never fires | Ensure `ReactiveRedisMessageListenerContainer` is in the context (it is declared in `racer-demo`'s `RedisListenerConfig`). `RacerListenerRegistrar` is conditional on that bean. |
 | `channelRef` resolves to `null` | Verify `racer.channels.<alias>.name` is set in `application.properties` and the alias spelling matches exactly. |
-| POJO deserialization fails silently | Enable DEBUG logging for `com.cheetah.racer.common.listener` — the exact `JsonProcessingException` is logged before the DLQ enqueue. |
+| POJO deserialization fails silently | Enable DEBUG logging for `com.cheetah.racer.listener` — the exact `JsonProcessingException` is logged before the DLQ enqueue. |
 | DLQ not receiving failures | Ensure `DeadLetterQueueService` is on the classpath and implements `RacerDeadLetterHandler`. In `racer-demo` this is already wired. In a custom app, provide your own `RacerDeadLetterHandler` bean. |
 | Two listeners on the same channel — only one fires | Both listeners subscribe independently and both will fire. If only one fires, check that both beans are Spring-managed `@Component` / `@Service` (not created with `new`). |
 | `concurrency` setting ignored | `concurrency` is only honoured when `mode = ConcurrencyMode.CONCURRENT`. In `SEQUENTIAL` mode the value is ignored and the pipeline runs with `flatMap(concurrency = 1)`. |

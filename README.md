@@ -1,6 +1,6 @@
 # Racer — Reactive Redis Messaging
 
-A multi-module Spring Boot library and demo application for annotation-driven reactive Redis messaging. Define publishers, subscribers, request-reply responders, and durable stream consumers with simple annotations — no boilerplate infrastructure code required.
+A Spring Boot library for annotation-driven reactive Redis messaging. Define publishers, subscribers, request-reply responders, and durable stream consumers with simple annotations — no boilerplate infrastructure code required.
 
 - **Annotation-Driven Publishing** — `@EnableRacer`, `@RacerPublisher`, `@PublishResult`, `@RacerPriority` for declarative, property-driven publishing
 - **Declarative Pub/Sub Consumers** — `@RacerListener` turns any Spring method into a Redis Pub/Sub subscriber with `SEQUENTIAL` or `CONCURRENT` processing, schema validation, router integration, and automatic DLQ on failure
@@ -110,103 +110,103 @@ Metrics: RacerMetrics (Micrometer) wired into all publish/consume/DLQ paths
 ```
 
 | Module | Role | Port |
-|--------|------|------|
-| `racer-common` | Shared models, annotations, services, web controllers | — |
-| `racer-starter` | Thin aggregator / Spring Boot starter | — |
-| `racer-demo` | Demo application combining publisher + consumer + responder + client | 8080 |
+|--------|------|----- |
+| `racer` | Library: annotations, models, auto-configuration, web controllers | — |
+| `racer-demo` | Standalone demo app combining publisher + consumer + responder + client | 8080 |
 
 ---
 
 ## Project Structure
 
 ```
-racer/
-├── pom.xml                          # Parent POM (packaging: pom)
-├── compose.yaml                     # Docker Compose (single Redis)
-├── compose.sentinel.yaml            # High-availability: Sentinel mode
-├── compose.cluster.yaml             # High-availability: Cluster mode
-│
-├── racer-common/                    # Shared library (annotations, services, web)
-│   └── src/main/java/com/cheetah/racer/common/
-│       ├── RedisChannels.java       # Channel/key constants
-│       ├── annotation/
-│       │   ├── EnableRacer.java             # Activates the annotation framework
-│       │   ├── EnableRacerClients.java      # Enables @RacerClient scanning
-│       │   ├── RacerPublisher.java          # Field injection annotation
-│       │   ├── PublishResult.java           # Method auto-publish (+ durable mode)
-│       │   ├── RacerRoute.java              # Content-based routing (container)
-│       │   ├── RacerRouteRule.java          # Per-rule: field, matches, to, sender
-│       │   ├── ConcurrencyMode.java         # SEQUENTIAL / CONCURRENT dispatch enum
-│       │   ├── RacerListener.java           # Declarative Pub/Sub subscriber
-│       │   ├── RacerStreamListener.java     # Durable Redis Streams consumer
-│       │   ├── RacerResponder.java          # Request-reply handler annotation
-│       │   ├── RacerClient.java             # Interface marker for proxy generation
-│       │   └── RacerRequestReply.java       # Interface method: declare request-reply call
-│       ├── aspect/
-│       │   └── PublishResultAspect.java     # AOP: pub/sub OR durable stream
-│       ├── config/
-│       │   ├── RedisConfig.java                  # ReactiveRedisTemplate beans
-│       │   ├── RacerAutoConfiguration.java        # Wires all beans
-│       │   ├── RacerWebAutoConfiguration.java     # Wires opt-in web controllers
-│       │   └── RacerProperties.java               # racer.* property binding
-│       ├── listener/
-│       │   ├── RacerDeadLetterHandler.java        # SPI: forward failed msgs to DLQ
-│       │   └── RacerListenerRegistrar.java        # BeanPostProcessor for @RacerListener
-│       ├── metrics/
-│       │   └── RacerMetrics.java                  # Micrometer counters/timers/gauge
-│       ├── model/
-│       │   ├── RacerMessage.java     # Fire-and-forget message
-│       │   ├── RacerRequest.java     # Request-reply request
-│       │   ├── RacerReply.java       # Request-reply response
-│       │   └── DeadLetterMessage.java
-│       ├── processor/
-│       │   └── RacerPublisherFieldProcessor.java  # BeanPostProcessor for @RacerPublisher
-│       ├── publisher/
-│       │   ├── RacerChannelPublisher.java         # Publisher interface
-│       │   ├── RacerChannelPublisherImpl.java     # Pub/Sub implementation (+ metrics)
-│       │   ├── RacerPublisherRegistry.java        # Multi-channel registry
-│       │   └── RacerStreamPublisher.java          # Durable stream publisher (XADD)
-│       ├── requestreply/
-│       │   ├── RacerResponderRegistrar.java       # BeanPostProcessor for @RacerResponder
-│       │   ├── RacerClientRegistrar.java          # ImportBeanDefinitionRegistrar for @RacerClient
-│       │   └── RacerClientFactoryBean.java        # JDK dynamic proxy FactoryBean
-│       ├── router/
-│       │   └── RacerRouterService.java            # @PostConstruct scans @RacerRoute beans
-│       ├── service/
-│       │   ├── DeadLetterQueueService.java        # DLQ enqueue + republish
-│       │   ├── DlqReprocessorService.java         # Republish-only DLQ reprocessor
-│       │   └── RacerRetentionService.java         # Scheduled XTRIM + DLQ age pruning
-│       ├── stream/
-│       │   └── RacerStreamListenerRegistrar.java  # BeanPostProcessor for @RacerStreamListener
-│       ├── tx/
-│       │   └── RacerTransaction.java              # Atomic ordered multi-channel publish
-│       └── web/
-│           ├── DlqController.java                 # Conditional on racer.web.dlq-enabled
-│           ├── RetentionController.java           # Conditional on racer.web.retention-enabled
-│           ├── RouterController.java              # Conditional on racer.web.router-enabled
-│           ├── ChannelRegistryController.java     # Conditional on racer.web.channels-enabled
-│           └── SchemaController.java              # Conditional on racer.web.schema-enabled
-│
-├── racer-starter/                   # Spring Boot starter (thin aggregator)
-│   └── pom.xml
-│
-└── racer-demo/                      # Demo application (port 8080)
-    └── src/main/java/com/cheetah/racer/demo/
-        ├── RacerDemoApplication.java   # @EnableRacer @EnableRacerClients
-        ├── client/
-        │   └── DemoClient.java          # @RacerClient interface with @RacerRequestReply
-        ├── config/
-        │   └── RedisListenerConfig.java # ReactiveRedisMessageListenerContainer
-        ├── listener/
-        │   └── DemoMessageListener.java # @RacerListener, @RacerStreamListener examples
-        ├── poller/
-        │   └── DemoPoller.java          # @RacerPoll example
-        ├── publisher/
-        │   └── DemoPublisher.java       # @PublishResult, @RacerPublisher examples
-        ├── responder/
-        │   └── DemoResponder.java       # @RacerResponder example
-        └── router/
-            └── DemoRouter.java          # @RacerRoute example
+racer/                                   # Library (single-module Maven project)
+├── pom.xml                              # Library POM (groupId: com.cheetah, artifactId: racer)
+├── compose.yaml                         # Docker Compose (single Redis)
+├── compose.sentinel.yaml                # High-availability: Sentinel mode
+├── compose.cluster.yaml                 # High-availability: Cluster mode
+└── src/
+    ├── main/
+    │   ├── java/com/cheetah/racer/
+    │   │   ├── RedisChannels.java       # Channel/key constants
+    │   │   ├── annotation/
+    │   │   │   ├── EnableRacer.java             # Activates the annotation framework
+    │   │   │   ├── EnableRacerClients.java      # Enables @RacerClient scanning
+    │   │   │   ├── RacerPublisher.java          # Field injection annotation
+    │   │   │   ├── PublishResult.java           # Method auto-publish (+ durable mode)
+    │   │   │   ├── RacerRoute.java              # Content-based routing (container)
+    │   │   │   ├── RacerRouteRule.java          # Per-rule: field, matches, to, sender
+    │   │   │   ├── ConcurrencyMode.java         # SEQUENTIAL / CONCURRENT dispatch enum
+    │   │   │   ├── RacerListener.java           # Declarative Pub/Sub subscriber
+    │   │   │   ├── RacerStreamListener.java     # Durable Redis Streams consumer
+    │   │   │   ├── RacerResponder.java          # Request-reply handler annotation
+    │   │   │   ├── RacerClient.java             # Interface marker for proxy generation
+    │   │   │   └── RacerRequestReply.java       # Interface method: declare request-reply call
+    │   │   ├── aspect/
+    │   │   │   └── PublishResultAspect.java     # AOP: pub/sub OR durable stream
+    │   │   ├── config/
+    │   │   │   ├── RedisConfig.java                  # ReactiveRedisTemplate beans
+    │   │   │   ├── RacerAutoConfiguration.java        # Wires all beans
+    │   │   │   ├── RacerWebAutoConfiguration.java     # Wires opt-in web controllers
+    │   │   │   └── RacerProperties.java               # racer.* property binding
+    │   │   ├── listener/
+    │   │   │   ├── RacerDeadLetterHandler.java        # SPI: forward failed msgs to DLQ
+    │   │   │   └── RacerListenerRegistrar.java        # BeanPostProcessor for @RacerListener
+    │   │   ├── metrics/
+    │   │   │   └── RacerMetrics.java                  # Micrometer counters/timers/gauge
+    │   │   ├── model/
+    │   │   │   ├── RacerMessage.java     # Fire-and-forget message
+    │   │   │   ├── RacerRequest.java     # Request-reply request
+    │   │   │   ├── RacerReply.java       # Request-reply response
+    │   │   │   └── DeadLetterMessage.java
+    │   │   ├── processor/
+    │   │   │   └── RacerPublisherFieldProcessor.java  # BeanPostProcessor for @RacerPublisher
+    │   │   ├── publisher/
+    │   │   │   ├── RacerChannelPublisher.java         # Publisher interface
+    │   │   │   ├── RacerChannelPublisherImpl.java     # Pub/Sub implementation (+ metrics)
+    │   │   │   ├── RacerPublisherRegistry.java        # Multi-channel registry
+    │   │   │   └── RacerStreamPublisher.java          # Durable stream publisher (XADD)
+    │   │   ├── requestreply/
+    │   │   │   ├── RacerResponderRegistrar.java       # BeanPostProcessor for @RacerResponder
+    │   │   │   ├── RacerClientRegistrar.java          # ImportBeanDefinitionRegistrar for @RacerClient
+    │   │   │   └── RacerClientFactoryBean.java        # JDK dynamic proxy FactoryBean
+    │   │   ├── router/
+    │   │   │   └── RacerRouterService.java            # @PostConstruct scans @RacerRoute beans
+    │   │   ├── service/
+    │   │   │   ├── DeadLetterQueueService.java        # DLQ enqueue + republish
+    │   │   │   ├── DlqReprocessorService.java         # Republish-only DLQ reprocessor
+    │   │   │   └── RacerRetentionService.java         # Scheduled XTRIM + DLQ age pruning
+    │   │   ├── stream/
+    │   │   │   └── RacerStreamListenerRegistrar.java  # BeanPostProcessor for @RacerStreamListener
+    │   │   ├── tx/
+    │   │   │   └── RacerTransaction.java              # Atomic ordered multi-channel publish
+    │   │   └── web/
+    │   │       ├── DlqController.java                 # Conditional on racer.web.dlq-enabled
+    │   │       ├── RetentionController.java           # Conditional on racer.web.retention-enabled
+    │   │       ├── RouterController.java              # Conditional on racer.web.router-enabled
+    │   │       ├── ChannelRegistryController.java     # Conditional on racer.web.channels-enabled
+    │   │       └── SchemaController.java              # Conditional on racer.web.schema-enabled
+    │   └── resources/META-INF/spring/
+    │       └── org.springframework.boot.autoconfigure.AutoConfiguration.imports
+    └── test/java/com/cheetah/racer/
+        └── (unit tests)
+
+../racer-demo/                           # Standalone demo application (separate project)
+└── src/main/java/com/cheetah/racer/demo/
+    ├── RacerDemoApplication.java   # @EnableRacer @EnableRacerClients
+    ├── client/
+    │   └── DemoClient.java          # @RacerClient interface with @RacerRequestReply
+    ├── config/
+    │   └── RedisListenerConfig.java # ReactiveRedisMessageListenerContainer
+    ├── listener/
+    │   └── DemoMessageListener.java # @RacerListener, @RacerStreamListener examples
+    ├── poller/
+    │   └── DemoPoller.java          # @RacerPoll example
+    ├── publisher/
+    │   └── DemoPublisher.java       # @PublishResult, @RacerPublisher examples
+    ├── responder/
+    │   └── DemoResponder.java       # @RacerResponder example
+    └── router/
+        └── DemoRouter.java          # @RacerRoute example
 ```
 
 ---
@@ -245,7 +245,7 @@ redis-cli ping
 
 Always set `JAVA_HOME` to JDK 21 before running.
 
-### Step 1 — Build all modules
+### Step 1 — Build and install the library
 
 ```bash
 export JAVA_HOME=$(/usr/libexec/java_home -v 21)
@@ -255,22 +255,21 @@ mvn clean install -DskipTests
 Expected output:
 ```
 [INFO] racer .............................................. SUCCESS
-[INFO] racer-common ....................................... SUCCESS
-[INFO] racer-starter ...................................... SUCCESS
-[INFO] racer-demo ......................................... SUCCESS
 [INFO] BUILD SUCCESS
 ```
 
 ### Step 2 — Start the demo application
 
+From the `../racer-demo/` directory:
+
 ```bash
 export JAVA_HOME=$(/usr/libexec/java_home -v 21)
-mvn -pl :racer-demo -am spring-boot:run
+mvn spring-boot:run
 ```
 
 Or via jar:
 ```bash
-java -jar racer-demo/target/racer-demo-0.0.1-SNAPSHOT.jar
+java -jar target/racer-demo-0.0.1-SNAPSHOT.jar
 ```
 
 The application starts on **port 8080**. Startup log includes:
@@ -691,7 +690,7 @@ public void handleOrder(String rawPayload) {
 **Integration with schema validation, routing, and DLQ:**
 - If a `RacerSchemaValidator` bean is present, the payload is validated before dispatch; schema failures are forwarded to the DLQ without invoking the method.
 - If a `RacerRouterService` bean is present, the router decides whether the message is meant for this listener's channel; non-matching messages are silently skipped.
-- Any exception thrown by the method (or emitted by a returned `Mono`) increments the listener's `failedCount` and forwards the message to `RacerDeadLetterHandler` (implemented by `DeadLetterQueueService` in `racer-common`).
+- Any exception thrown by the method (or emitted by a returned `Mono`) increments the listener's `failedCount` and forwards the message to `RacerDeadLetterHandler` (implemented by `DeadLetterQueueService` in `racer`).
 
 **Metrics:** each listener exposes `getProcessedCount(id)` and `getFailedCount(id)` via `RacerListenerRegistrar`, and records to Micrometer under `racer.listener.processed` / `racer.listener.failed` tags.
 
@@ -1831,7 +1830,7 @@ This section explains how it compares architecturally to dedicated message broke
 | **Schema validation** | `RacerSchemaRegistry` validates every message against a JSON Schema Draft-07 file at publish and consume time — opt-in via `racer.schema.enabled=true`. |
 | **Retention lifecycle** | `RacerRetentionService` automatically trims streams (`XTRIM MAXLEN`) and prunes stale DLQ entries on a configurable cron schedule. |
 | **Config-driven channels** | Add `racer.channels.payments.name=racer:payments` → channel exists at startup. No broker admin, no exchange bindings. |
-| **Tiny footprint** | `racer-common` is 35 KB. Easy to audit, fork, and extend. |
+| **Tiny footprint** | `racer` is 35 KB. Easy to audit, fork, and extend. |
 
 ---
 
@@ -2085,7 +2084,7 @@ racer.pipeline.max-batch-size=100
 - `@RacerPriority` annotation — `defaultLevel` attribute for use alongside `@PublishResult`
 - `RacerMessage.priority` field — `String`, defaults to `"NORMAL"`; backward-compatible (missing field → `NORMAL`)
 - `RacerPriorityPublisher` — routes messages to sub-channels keyed `{baseChannel}:priority:{LEVEL}` (e.g. `racer:orders:priority:HIGH`)
-- `RacerPriorityConsumerService` (in `racer-common`) — subscribes to all configured priority sub-channels; buffers arriving messages in a `PriorityBlockingQueue<PrioritizedMessage>` ordered by weight; a drain loop running on `Schedulers.boundedElastic()` processes messages in strict priority order; active only when `racer.priority.enabled=true`
+- `RacerPriorityConsumerService` (in `racer`) — subscribes to all configured priority sub-channels; buffers arriving messages in a `PriorityBlockingQueue<PrioritizedMessage>` ordered by weight; a drain loop running on `Schedulers.boundedElastic()` processes messages in strict priority order; active only when `racer.priority.enabled=true`
 - `@RacerPriority` annotation — `defaultLevel` attribute for use alongside `@PublishResult`; priority routing handled via `RacerPriorityPublisher`
 - `PriorityProperties` — `racer.priority.enabled`, `levels`, `strategy`, `channels`
 
@@ -2136,7 +2135,7 @@ racer.priority.channels=racer:orders,racer:notifications
 
 - `@RacerListener` annotation — marks a method as a reactive channel subscriber. Attributes: `channel`, `channelRef`, `mode` (`SEQUENTIAL` / `CONCURRENT`), `concurrency`, `id`
 - `ConcurrencyMode` enum — `SEQUENTIAL` (concurrency = 1, ordered) and `CONCURRENT` (up to N parallel workers)
-- `RacerDeadLetterHandler` interface (`com.cheetah.racer.common.listener`) — SPI in `racer-common` so the registrar can forward failed messages to the DLQ without a direct dependency on `racer-client`
+- `RacerDeadLetterHandler` interface (`com.cheetah.racer.listener`) — SPI in `racer` so the registrar can forward failed messages to the DLQ without a direct dependency on `racer-client`
 - `RacerListenerRegistrar` (BeanPostProcessor) — scans all Spring beans for `@RacerListener` methods at startup; resolves channel names (direct or via alias); subscribes to `ReactiveRedisMessageListenerContainer`; dispatches on `boundedElastic()` using `flatMap(handler, effectiveConcurrency)`; runs schema validation and router checks; records `processedCount`/`failedCount` per listener; forwards exceptions to `RacerDeadLetterHandler`; disposes all subscriptions on `@PreDestroy`
 - Flexible parameter dispatch: `RacerMessage` → full envelope; `String` → raw payload; any type `T` → `objectMapper.readValue(payload, T.class)`
 - `DeadLetterQueueService` updated to `implements RacerDeadLetterHandler`
