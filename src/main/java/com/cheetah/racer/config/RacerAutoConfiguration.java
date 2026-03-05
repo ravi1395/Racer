@@ -33,8 +33,14 @@ import org.springframework.core.io.ResourceLoader;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;
 import org.springframework.scheduling.annotation.EnableScheduling;
+import reactor.core.scheduler.Scheduler;
+import reactor.core.scheduler.Schedulers;
 
 import java.util.Optional;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Core Racer auto-configuration.
@@ -192,6 +198,39 @@ public class RacerAutoConfiguration {
         return new RacerPollRegistrar(racerPublisherRegistry, objectMapper, racerMetrics.orElse(null));
     }
 
+    // ── Dedicated listener thread pool ───────────────────────────────────────
+
+    /**
+     * A Reactor {@link Scheduler} backed by a configurable, Racer-owned thread pool.
+     *
+     * <p>All {@code @RacerListener} handler invocations run on this scheduler instead of
+     * the JVM-wide {@code Schedulers.boundedElastic()}, so listener workloads cannot
+     * starve other framework or application code that also uses boundedElastic.
+     *
+     * <p>Pool size is controlled by {@code racer.thread-pool.*} properties. Defaults:
+     * core={@code 2×CPU}, max={@code 10×CPU}, queue=1 000, keep-alive=60 s.
+     *
+     * <p>The scheduler (and the underlying thread pool) is shut down automatically when
+     * the Spring context closes.
+     */
+    @Bean(destroyMethod = "dispose")
+    public Scheduler racerListenerScheduler(RacerProperties racerProperties) {
+        RacerProperties.ThreadPoolProperties tp = racerProperties.getThreadPool();
+        AtomicInteger counter = new AtomicInteger(1);
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(
+                tp.getCoreSize(),
+                tp.getMaxSize(),
+                tp.getKeepAliveSeconds(), TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(tp.getQueueCapacity()),
+                r -> {
+                    Thread t = new Thread(r, tp.getThreadNamePrefix() + counter.getAndIncrement());
+                    t.setDaemon(true);
+                    return t;
+                });
+        executor.allowCoreThreadTimeOut(false);
+        return Schedulers.fromExecutorService(executor, "racer-listener");
+    }
+
     // ── @RacerListener registrar ─────────────────────────────────────────
 
     /**
@@ -208,6 +247,7 @@ public class RacerAutoConfiguration {
             ReactiveRedisMessageListenerContainer listenerContainer,
             RacerProperties racerProperties,
             ObjectMapper objectMapper,
+            Scheduler racerListenerScheduler,
             Optional<RacerMetrics> racerMetrics,
             Optional<RacerSchemaRegistry> racerSchemaRegistry,
             Optional<RacerRouterService> racerRouterService,
@@ -216,6 +256,7 @@ public class RacerAutoConfiguration {
                 listenerContainer,
                 objectMapper,
                 racerProperties,
+                racerListenerScheduler,
                 racerMetrics.orElse(null),
                 racerSchemaRegistry.orElse(null),
                 racerRouterService.orElse(null),

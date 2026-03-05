@@ -22,6 +22,7 @@ import org.springframework.data.redis.listener.ReactiveRedisMessageListenerConta
 import org.springframework.lang.Nullable;
 import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
 
 import java.lang.reflect.Method;
@@ -75,6 +76,7 @@ public class RacerListenerRegistrar implements BeanPostProcessor, EnvironmentAwa
     private final ReactiveRedisMessageListenerContainer listenerContainer;
     private final ObjectMapper objectMapper;
     private final RacerProperties racerProperties;
+    private final Scheduler listenerScheduler;
 
     @Nullable
     private final RacerMetrics racerMetrics;
@@ -97,6 +99,10 @@ public class RacerListenerRegistrar implements BeanPostProcessor, EnvironmentAwa
     private final Map<String, AtomicLong> processedCounts = new ConcurrentHashMap<>();
     private final Map<String, AtomicLong> failedCounts    = new ConcurrentHashMap<>();
 
+    /** Adaptive tuners for AUTO-mode listeners — shut down on application stop. */
+    private final Map<String, AdaptiveConcurrencyTuner> tuners = new ConcurrentHashMap<>();
+
+    /** Constructor used by tests and legacy code — falls back to {@code boundedElastic()}. */
     public RacerListenerRegistrar(
             ReactiveRedisMessageListenerContainer listenerContainer,
             ObjectMapper objectMapper,
@@ -105,9 +111,24 @@ public class RacerListenerRegistrar implements BeanPostProcessor, EnvironmentAwa
             @Nullable RacerSchemaRegistry racerSchemaRegistry,
             @Nullable RacerRouterService racerRouterService,
             @Nullable RacerDeadLetterHandler deadLetterHandler) {
+        this(listenerContainer, objectMapper, racerProperties, Schedulers.boundedElastic(),
+                racerMetrics, racerSchemaRegistry, racerRouterService, deadLetterHandler);
+    }
+
+    /** Production constructor — uses the dedicated Racer listener thread pool. */
+    public RacerListenerRegistrar(
+            ReactiveRedisMessageListenerContainer listenerContainer,
+            ObjectMapper objectMapper,
+            RacerProperties racerProperties,
+            Scheduler listenerScheduler,
+            @Nullable RacerMetrics racerMetrics,
+            @Nullable RacerSchemaRegistry racerSchemaRegistry,
+            @Nullable RacerRouterService racerRouterService,
+            @Nullable RacerDeadLetterHandler deadLetterHandler) {
         this.listenerContainer   = listenerContainer;
         this.objectMapper        = objectMapper;
         this.racerProperties     = racerProperties;
+        this.listenerScheduler   = listenerScheduler;
         this.racerMetrics        = racerMetrics;
         this.racerSchemaRegistry = racerSchemaRegistry;
         this.racerRouterService  = racerRouterService;
@@ -144,6 +165,7 @@ public class RacerListenerRegistrar implements BeanPostProcessor, EnvironmentAwa
                 disposed++;
             }
         }
+        tuners.values().forEach(AdaptiveConcurrencyTuner::shutdown);
         log.info("[RACER-LISTENER] Stopped {} subscription(s).", disposed);
         processedCounts.forEach((id, cnt) ->
                 log.info("[RACER-LISTENER] Listener '{}': processed={} failed={}",
@@ -170,31 +192,69 @@ public class RacerListenerRegistrar implements BeanPostProcessor, EnvironmentAwa
                 ? beanName + "." + method.getName()
                 : rawId;
 
-        // --- concurrency ---
-        int effectiveConcurrency = ann.mode() == ConcurrencyMode.SEQUENTIAL
-                ? 1
-                : Math.max(1, ann.concurrency());
-
+        // --- concurrency + subscription ---
         method.setAccessible(true);
 
         processedCounts.put(listenerId, new AtomicLong(0));
         failedCounts.put(listenerId,    new AtomicLong(0));
 
-        log.info("[RACER-LISTENER] Registered {}.{}() <- channel '{}' (mode={}, concurrency={})",
-                beanName, method.getName(), resolvedChannel,
-                ann.mode(), effectiveConcurrency);
+        if (ann.mode() == ConcurrencyMode.AUTO) {
+            AdaptiveConcurrencyTuner tuner = new AdaptiveConcurrencyTuner(
+                    listenerId,
+                    processedCounts.get(listenerId),
+                    failedCounts.get(listenerId),
+                    racerProperties.getThreadPool().getMaxSize());
+            tuners.put(listenerId, tuner);
 
-        Disposable sub = listenerContainer
-                .receive(ChannelTopic.of(resolvedChannel))
-                .flatMap(
-                        msg -> dispatch(bean, method, msg, listenerId, resolvedChannel),
-                        effectiveConcurrency)
-                .subscribe(
-                        v  -> { /* completions handled inside dispatch */ },
-                        ex -> log.error("[RACER-LISTENER] Fatal subscription error on listener '{}': {}",
-                                listenerId, ex.getMessage(), ex));
+            log.info("[RACER-LISTENER] Registered {}.{}() <- channel '{}' (mode=AUTO, initial-concurrency={})",
+                    beanName, method.getName(), resolvedChannel, tuner.getConcurrency());
 
-        subscriptions.add(sub);
+            // flatMap has no reactive cap (Integer.MAX_VALUE); the semaphore inside
+            // AdaptiveConcurrencyTuner is the sole throttle and is dynamically resized.
+            Disposable sub = listenerContainer
+                    .receive(ChannelTopic.of(resolvedChannel))
+                    .flatMap(msg ->
+                            Mono.fromCallable(() -> { tuner.acquireSlot(); return msg; })
+                                    .subscribeOn(listenerScheduler)
+                                    .flatMap(m ->
+                                            dispatch(bean, method, m, listenerId, resolvedChannel)
+                                                    .doFinally(signal -> tuner.releaseSlot()))
+                                    .onErrorResume(ex -> {
+                                        if (ex instanceof InterruptedException) {
+                                            Thread.currentThread().interrupt();
+                                        }
+                                        log.warn("[RACER-LISTENER] AUTO '{}' skipping message after error: {}",
+                                                listenerId, ex.getMessage());
+                                        return Mono.empty();
+                                    }),
+                            Integer.MAX_VALUE)
+                    .subscribe(
+                            v  -> {},
+                            ex -> log.error("[RACER-LISTENER] Fatal subscription error on listener '{}': {}",
+                                    listenerId, ex.getMessage(), ex));
+
+            subscriptions.add(sub);
+        } else {
+            int effectiveConcurrency = ann.mode() == ConcurrencyMode.SEQUENTIAL
+                    ? 1
+                    : Math.max(1, ann.concurrency());
+
+            log.info("[RACER-LISTENER] Registered {}.{}() <- channel '{}' (mode={}, concurrency={})",
+                    beanName, method.getName(), resolvedChannel,
+                    ann.mode(), effectiveConcurrency);
+
+            Disposable sub = listenerContainer
+                    .receive(ChannelTopic.of(resolvedChannel))
+                    .flatMap(
+                            msg -> dispatch(bean, method, msg, listenerId, resolvedChannel),
+                            effectiveConcurrency)
+                    .subscribe(
+                            v  -> {},
+                            ex -> log.error("[RACER-LISTENER] Fatal subscription error on listener '{}': {}",
+                                    listenerId, ex.getMessage(), ex));
+
+            subscriptions.add(sub);
+        }
     }
 
     // ── Dispatch ─────────────────────────────────────────────────────────────
@@ -256,7 +316,7 @@ public class RacerListenerRegistrar implements BeanPostProcessor, EnvironmentAwa
                     .fromCallable(() -> isNoArg
                             ? method.invoke(bean)
                             : method.invoke(bean, resolvedArg))
-                    .subscribeOn(Schedulers.boundedElastic())
+                    .subscribeOn(listenerScheduler)
                     .flatMap(result -> {
                         if (result instanceof Mono<?> mono) {
                             return mono.then();

@@ -28,6 +28,7 @@ Each tutorial is self-contained and builds on a running Racer instance.
 17. [Tutorial 17 — Pipelined Batch Publishing](#tutorial-17--pipelined-batch-publishing)
 18. [Tutorial 18 — Message Priority Channels](#tutorial-18--message-priority-channels)
 19. [Tutorial 19 — Declarative Channel Consumers (@RacerListener)](#tutorial-19--declarative-channel-consumers-racerlistener)
+20. [Tutorial 20 — Performance Tuning: Dedicated Thread Pool & Adaptive Concurrency](#tutorial-20--performance-tuning-dedicated-thread-pool--adaptive-concurrency)
 
 ---
 
@@ -313,7 +314,7 @@ via `ReactiveRedisMessageListenerContainer`. No XML wiring needed.
 
 ### Step 2 — Concurrency modes
 
-`@RacerListener` supports two concurrency modes:
+`@RacerListener` supports three concurrency modes:
 
 ```java
 // Sequential — messages processed one at a time, in order
@@ -323,10 +324,15 @@ public Mono<Void> onOrderSequential(RacerMessage msg) { ... }
 // Concurrent — up to N messages processed in parallel
 @RacerListener(channel = "racer:orders", mode = ConcurrencyMode.CONCURRENT, concurrency = 8)
 public Mono<Void> onOrderConcurrent(RacerMessage msg) { ... }
+
+// Auto — AIMD self-tuning; Racer finds the best concurrency automatically
+@RacerListener(channel = "racer:orders", mode = ConcurrencyMode.AUTO)
+public Mono<Void> onOrderAuto(RacerMessage msg) { ... }
 ```
 
-`SEQUENTIAL` mode is ideal for ordered processing (e.g. account balance updates). 
-`CONCURRENT` mode is ideal for high-throughput fan-out processing.
+`SEQUENTIAL` mode is ideal for ordered processing (e.g. account balance updates).  
+`CONCURRENT` mode is ideal for high-throughput fan-out processing with a known ceiling.  
+`AUTO` mode starts at `2×CPU` workers, then automatically increases or decreases concurrency every 10 seconds based on the AIMD algorithm — use it when you want maximum throughput without manual tuning. The ceiling is `racer.thread-pool.max-size` (default `10×CPU`); the `concurrency` attribute is ignored.
 
 ---
 
@@ -3089,7 +3095,7 @@ curl -s http://localhost:8080/actuator/prometheus | grep racer_listener
 | POJO deserialization fails silently | Enable DEBUG logging for `com.cheetah.racer.listener` — the exact `JsonProcessingException` is logged before the DLQ enqueue. |
 | DLQ not receiving failures | Ensure `DeadLetterQueueService` is on the classpath and implements `RacerDeadLetterHandler`. In `racer-demo` this is already wired. In a custom app, provide your own `RacerDeadLetterHandler` bean. |
 | Two listeners on the same channel — only one fires | Both listeners subscribe independently and both will fire. If only one fires, check that both beans are Spring-managed `@Component` / `@Service` (not created with `new`). |
-| `concurrency` setting ignored | `concurrency` is only honoured when `mode = ConcurrencyMode.CONCURRENT`. In `SEQUENTIAL` mode the value is ignored and the pipeline runs with `flatMap(concurrency = 1)`. |
+| `concurrency` setting ignored | `concurrency` is only honoured when `mode = ConcurrencyMode.CONCURRENT`. In `SEQUENTIAL` mode the value is ignored and the pipeline runs with `flatMap(concurrency = 1)`. In `AUTO` mode concurrency is self-tuned by the AIMD algorithm and the attribute is also ignored. |
 
 ---
 
@@ -3107,3 +3113,237 @@ redis-cli PUBLISH racer:orders '{...}'
 ```
 
 Declarative, annotation-driven channel subscriptions with zero boilerplate — no `listenerContainer.receive()` calls, no manual `Disposable` management, and full integration with the existing schema, routing, metrics, and DLQ infrastructure.
+
+---
+
+## Tutorial 20 — Performance Tuning: Dedicated Thread Pool & Adaptive Concurrency
+
+### What you'll learn
+
+- How Racer's dedicated thread pool isolates listener execution from other framework schedulers
+- How to configure the pool size and thread naming via `racer.thread-pool.*` properties
+- How `ConcurrencyMode.AUTO` uses an AIMD algorithm to tune concurrency at runtime
+- When to use `AUTO` vs `CONCURRENT` vs `SEQUENTIAL`
+- How `@PublishResult` inherits `sender`/`async` from channel properties to eliminate redundancy
+
+### Prerequisites
+
+- Tutorial 1 completed (Redis running, `racer-demo` built)
+- Basic familiarity with `@RacerListener` (Tutorial 3 or Tutorial 19 recommended)
+
+---
+
+### Background — Why a Dedicated Thread Pool?
+
+By default, Reactor uses `Schedulers.boundedElastic()` as the shared work-stealing pool for all blocking work. When many `@RacerListener` methods run concurrently they compete for threads with every other part of your application (Spring WebFlux, WebClient, Lettuce I/O, etc.) — this causes latency spikes under load.
+
+Racer creates an **isolated `ThreadPoolExecutor`** for all listener dispatch operations:
+- Racer listeners never block Spring's HTTP worker threads
+- The pool is sized and named independently, making it visible in thread dumps
+- The pool is gracefully shut down at application stop (via `Scheduler.dispose()`)
+
+---
+
+### Step 1 — View the default thread pool in action
+
+Start `racer-demo` and check the thread names in a listener log:
+
+```properties
+# racer-demo/src/main/resources/application.properties
+logging.level.com.cheetah.racer=DEBUG
+```
+
+When a message arrives, the log line will show the executing thread:
+
+```
+[racer-worker-1] c.c.r.l.RacerListenerRegistrar : dispatching to StockHandler#onStock
+```
+
+The `racer-worker-` prefix comes from `racer.thread-pool.thread-name-prefix` (default).
+
+---
+
+### Step 2 — Configure the thread pool size
+
+Add these properties to `application.properties` to tune the pool:
+
+```properties
+# Number of always-alive core threads (default: 2 × CPU cores)
+racer.thread-pool.core-size=4
+
+# Maximum threads — also caps ConcurrencyMode.AUTO ceiling (default: 10 × CPU cores)
+racer.thread-pool.max-size=20
+
+# Bounded task queue — protects the JVM from unlimited queuing under extreme backpressure
+racer.thread-pool.queue-capacity=500
+
+# How long an idle thread above core-size is kept alive (seconds, default: 60)
+racer.thread-pool.keep-alive-seconds=30
+
+# Thread name prefix — visible in thread dumps, profilers, and APM tools
+racer.thread-pool.thread-name-prefix=my-racer-
+```
+
+**Sizing guidelines:**
+
+| Workload type | Recommended `core-size` | Recommended `max-size` |
+|---------------|-------------------------|------------------------|
+| I/O-bound (DB calls, HTTP) | `4–8 × CPU` | `20–50 × CPU` |
+| CPU-bound (transformation) | `1–2 × CPU` | `2–4 × CPU` |
+| Mixed | `2–4 × CPU` | `10–20 × CPU` |
+| Unknown / let Racer tune | (use defaults, enable `AUTO`) | (`AUTO` will find the ceiling) |
+
+Restart `racer-demo` and confirm the thread names changed:
+
+```
+[my-racer-1] c.c.r.l.RacerListenerRegistrar : dispatching to StockHandler#onStock
+```
+
+---
+
+### Step 3 — Use `ConcurrencyMode.AUTO` on a listener
+
+`AUTO` mode removes the guesswork. Instead of picking a fixed `concurrency` value, Racer starts at `2×CPU` workers and adjusts every 10 seconds using the **AIMD (Additive Increase / Multiplicative Decrease)** algorithm:
+
+- **Error rate > 10%** → multiply current concurrency by 0.75 (aggressive back-off)
+- **Throughput improved** → add 1 worker (gentle increase)
+- **Throughput dropped** → remove 1 worker (gentle decrease)
+- **Stable** → no change
+
+```java
+@Slf4j
+@Component
+public class StockEventHandler {
+
+    // No concurrency= needed — Racer tunes it automatically
+    @RacerListener(channelRef = "stock", mode = ConcurrencyMode.AUTO)
+    public Mono<Void> onStockEvent(StockEvent event) {
+        return stockService.process(event)
+                .doOnSuccess(v -> log.debug("processed SKU {}", event.getSku()))
+                .then();
+    }
+}
+```
+
+> **The `concurrency` attribute is ignored when `mode = AUTO`.** Set `racer.thread-pool.max-size` to cap how high the tuner can go.
+
+Run a load test to observe auto-tuning:
+
+```bash
+# Seed 10 000 stock events
+for i in $(seq 1 10000); do
+  redis-cli PUBLISH racer:stock \
+    "{\"id\":\"s-$i\",\"payload\":{\"sku\":\"SKU-$i\",\"qty\":$((RANDOM % 100))},\"sender\":\"test\",\"timestamp\":\"$(date -u +%FT%TZ)\",\"retryCount\":0}" \
+    > /dev/null
+done
+
+# Watch the racer-demo logs — you'll see concurrency climb from ~(2×CPU) toward max-size
+# as throughput improves, and drop back if errors appear.
+```
+
+---
+
+### Step 4 — AUTO vs CONCURRENT vs SEQUENTIAL — choosing the right mode
+
+| Mode | When to use |
+|------|-------------|
+| `SEQUENTIAL` | Order matters (e.g. event sourcing, balance updates). Throughput is low but predictable. |
+| `CONCURRENT` | You know the sweet spot (e.g. profiled at 16 workers). Set `concurrency` once, done. |
+| `AUTO` | You don't know the sweet spot, or it changes with load. Let Racer discover it continuously. |
+
+`AUTO` is a good default for new services. Switch to `CONCURRENT` once you've profiled the ideal value.
+
+---
+
+### Step 5 — Eliminate redundancy in `@PublishResult` with channel properties
+
+Before this improvement, publishing a message required duplicating config:
+
+```java
+// Old — sender and async duplicated from application.properties
+@PublishResult(channelRef = "stock", sender = "inventory-service", async = true)
+public Mono<StockEvent> createItem(ItemRequest req) { ... }
+```
+
+```properties
+# application.properties
+racer.channels.stock.name=racer:stock
+racer.channels.stock.sender=inventory-service   # same value repeated above!
+racer.channels.stock.async=true                 # same value repeated above!
+```
+
+Now `sender` and `async` are inherited automatically from the channel's properties:
+
+```java
+// New — clean, no duplication
+@PublishResult(channelRef = "stock")
+public Mono<StockEvent> createItem(ItemRequest req) { ... }
+```
+
+The resolution chain for `sender`:
+1. Non-empty annotation `sender` value → used as-is
+2. `racer.channels.<alias>.sender` → used when annotation `sender` is blank
+3. `"racer-publisher"` → hardcoded fallback
+
+The resolution chain for `async`:
+- When `channelRef` maps to a configured channel → `racer.channels.<alias>.async` always wins
+- When using `channel` (direct name, no alias) → annotation's `async` value is used
+
+This lets you control every aspect of publishing in one place — `application.properties` — without touching Java source.
+
+---
+
+### Step 6 — Verify thread pool isolation under load
+
+Send a burst of messages and confirm Racer threads are isolated:
+
+```bash
+# Terminal 1 — watch JVM threads
+jstack $(pgrep -f racer-demo) | grep "racer-worker"
+
+# You should see N lines like:
+# "racer-worker-1" #30 daemon prio=5 os_prio=31 cpu=12.34ms elapsed=60.01s
+# "racer-worker-2" #31 daemon prio=5 os_prio=31 cpu=11.98ms elapsed=60.01s
+# ...
+
+# Terminal 2 — hit the HTTP API while Racer is busy
+curl -s http://localhost:8080/actuator/health | jq .status
+# → "UP"  (HTTP stays responsive — Racer threads never block the Netty event loop)
+```
+
+---
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| `racer-worker-*` threads not visible in thread dump | Ensure `racer.thread-pool.thread-name-prefix` is set. If using a custom `racerListenerScheduler` bean, verify it wraps a named `ThreadPoolExecutor`. |
+| `AUTO` concurrency never rises above initial value | Raise `racer.thread-pool.max-size`. The tuner will not exceed this ceiling. Also ensure the listener is processing messages fast enough for the tuner to observe improved throughput. |
+| `AUTO` concurrency oscillates rapidly | This is normal behaviour — AIMD converges over several 10-second windows. If oscillation is too aggressive, consider `CONCURRENT` with a tuned fixed value. |
+| Thread pool queue saturated (tasks rejected) | Increase `racer.thread-pool.queue-capacity` or `racer.thread-pool.max-size`. Check listener processing time — slow handlers fill the queue faster. |
+| Channel properties not inherited by `@PublishResult` | Verify `channelRef` alias spelling matches exactly the key in `racer.channels.<alias>.*`. The lookup is case-sensitive. |
+| `sender` still shows `"racer-publisher"` despite channel config | Ensure `racer.channels.<alias>.sender` is set (not just `.name`). The fallback fires only when the annotation `sender` is blank and the channel config has a sender value. |
+
+---
+
+### What you built
+
+```
+@RacerListener(mode = AUTO)          AIMD tuner (10-second windows)
+        │                                     │
+        ▼                                     ▼
+   ResizableSemaphore ◄──────── increase / decrease permits
+        │
+        ▼
+   racerListenerScheduler (dedicated ThreadPoolExecutor)
+        │                    thread-name-prefix = racer-worker-
+        ▼
+   handler method(payload)
+
+@PublishResult(channelRef = "stock")   ←── sender & async from channel properties
+        │
+        ▼
+   RacerChannelPublisher → Redis PUBLISH
+```
+
+A self-tuning, isolated messaging backbone — maximum throughput without manual concurrency management, full thread isolation from the rest of the application, and zero duplication between annotation attributes and channel properties.

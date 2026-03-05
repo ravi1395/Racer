@@ -135,7 +135,7 @@ racer/                                   # Library (single-module Maven project)
     │   │   │   ├── PublishResult.java           # Method auto-publish (+ durable mode)
     │   │   │   ├── RacerRoute.java              # Content-based routing (container)
     │   │   │   ├── RacerRouteRule.java          # Per-rule: field, matches, to, sender
-    │   │   │   ├── ConcurrencyMode.java         # SEQUENTIAL / CONCURRENT dispatch enum
+    │   │   │   ├── ConcurrencyMode.java         # SEQUENTIAL / CONCURRENT / AUTO dispatch enum
     │   │   │   ├── RacerListener.java           # Declarative Pub/Sub subscriber
     │   │   │   ├── RacerStreamListener.java     # Durable Redis Streams consumer
     │   │   │   ├── RacerResponder.java          # Request-reply handler annotation
@@ -313,6 +313,11 @@ Started RacerDemoApplication in X.XXX seconds
 | `racer.pubsub.concurrency` | `256` | Max in-flight Pub/Sub messages processed concurrently (R-11) |
 | `racer.poll.enabled` | `true` | Enable/disable all `@RacerPoll` pollers (R-11) |
 | `racer.request-reply.default-timeout` | `30s` | Default timeout for `@RacerRequestReply` calls |
+| `racer.thread-pool.core-size` | `2×CPU` | Core threads in the dedicated Racer listener thread pool |
+| `racer.thread-pool.max-size` | `10×CPU` | Maximum threads; also caps `ConcurrencyMode.AUTO` ceiling |
+| `racer.thread-pool.queue-capacity` | `1000` | Bounded task queue depth for the Racer thread pool |
+| `racer.thread-pool.keep-alive-seconds` | `60` | Idle thread timeout (seconds) above `core-size` |
+| `racer.thread-pool.thread-name-prefix` | `racer-worker-` | Thread name prefix — visible in thread dumps and profilers |
 | `racer.web.dlq-enabled` | `false` | Expose `/api/dlq/**` REST endpoints |
 | `racer.web.retention-enabled` | `false` | Expose `/api/retention/**` REST endpoints |
 | `racer.web.router-enabled` | `false` | Expose `/api/router/**` REST endpoints |
@@ -407,13 +412,19 @@ public class OrderService {
 Annotate **any Spring-managed method**. The return value is automatically serialised and published to the configured channel as a side-effect. The HTTP caller / calling code receives the original return value unchanged.
 
 ```java
-// Using a channel alias from properties
-@PublishResult(channelRef = "orders", sender = "order-service", async = true)
+// Using a channel alias — sender and async are inherited from racer.channels.orders.*
+@PublishResult(channelRef = "orders")
 public Mono<Order> createOrder(OrderRequest req) {
     return orderRepository.save(req.toOrder());
 }
 
-// Using a direct Redis channel name
+// Override sender or async per-annotation when you need different values from the channel config
+@PublishResult(channelRef = "orders", sender = "checkout-service", async = false)
+public Mono<Order> createPriorityOrder(OrderRequest req) {
+    return orderRepository.save(req.toOrder());
+}
+
+// Using a direct Redis channel name (no alias fallback available)
 @PublishResult(channel = "racer:audit", async = false)  // blocking for audit
 public AuditRecord recordAudit(AuditEvent event) {
     return auditRepository.save(event.toRecord());
@@ -445,14 +456,23 @@ public Flux<Event> generateEvents() {
 |-----------|------|---------|-------------|
 | `channel` | `String` | `""` | Direct Redis channel name (Pub/Sub). Takes priority over `channelRef`. |
 | `channelRef` | `String` | `""` | Channel alias from `racer.channels.<alias>`. |
-| `sender` | `String` | `"racer-publisher"` | Sender label embedded in the message envelope. |
-| `async` | `boolean` | `true` | `true` = fire-and-forget; `false` = blocks until Redis confirms. |
+| `sender` | `String` | `""` | Sender label embedded in the message envelope. When empty (default), falls back to `racer.channels.<alias>.sender` (when `channelRef` is set), then to `"racer-publisher"`. Explicit values always take priority. |
+| `async` | `boolean` | `true` | `true` = fire-and-forget; `false` = blocks until Redis confirms. When `channelRef` maps to a configured channel, `racer.channels.<alias>.async` takes precedence over this attribute, allowing the publish mode to be controlled entirely from properties. |
 | `durable` | `boolean` | `false` | When `true`, publishes to a **Redis Stream** (XADD) instead of Pub/Sub. |
 | `streamKey` | `String` | `""` | The Redis Stream key to write to when `durable=true` (e.g. `racer:orders:stream`). |
 | `mode` | `ConcurrencyMode` | `SEQUENTIAL` | Dispatch strategy for `Flux<T>` returns. `SEQUENTIAL` = fire-and-forget `doOnNext`; `CONCURRENT` = `flatMap` with up to `concurrency` in-flight publishes. Ignored for `Mono` and POJO returns. |
 | `concurrency` | `int` | `4` | Maximum concurrent in-flight publish operations when `mode = CONCURRENT`. |
 
 **Resolution order:** `channel` (direct name) → `channelRef` (alias lookup) → default channel (`racer.default-channel`).
+
+**`sender` resolution chain (when `channelRef` is set):**
+1. Annotation `sender` value if non-empty
+2. `racer.channels.<alias>.sender` from properties
+3. Hardcoded fallback `"racer-publisher"`
+
+**`async` resolution (when `channelRef` is set):**
+- If the alias maps to a configured channel, `racer.channels.<alias>.async` overrides the annotation attribute — allowing publish mode to be managed entirely from properties without touching code.
+- If the alias is not configured (or `channel` is used directly), the annotation attribute value applies.
 
 **Supported return types:**
 
@@ -675,7 +695,8 @@ public void handleOrder(String rawPayload) {
 | Value | Max in-flight | Ordering |
 |-------|---------------|---------|
 | `SEQUENTIAL` | 1 | Strictly ordered — one message fully processed before next starts |
-| `CONCURRENT` | `concurrency` | Up to N messages processed in parallel on `boundedElastic` |
+| `CONCURRENT` | `concurrency` | Up to N messages processed in parallel on the dedicated Racer thread pool |
+| `AUTO` | adaptive | AIMD self-tuning — starts at `2×CPU`, adjusts every 10 seconds up to `racer.thread-pool.max-size`. The `concurrency` attribute is ignored. |
 
 **Supported parameter types**
 

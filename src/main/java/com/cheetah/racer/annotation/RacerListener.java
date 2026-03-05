@@ -89,13 +89,16 @@ public @interface RacerListener {
      * <ul>
      *   <li>{@link ConcurrencyMode#SEQUENTIAL} (default) — one message at a time.</li>
      *   <li>{@link ConcurrencyMode#CONCURRENT} — up to {@link #concurrency()} parallel workers.</li>
+     *   <li>{@link ConcurrencyMode#AUTO} — adaptively tunes worker count based on throughput
+     *       and error rate; {@link #concurrency()} is ignored.</li>
      * </ul>
      */
     ConcurrencyMode mode() default ConcurrencyMode.SEQUENTIAL;
 
     /**
      * Number of parallel workers when {@link #mode()} is {@link ConcurrencyMode#CONCURRENT}.
-     * Ignored in {@code SEQUENTIAL} mode (effective concurrency is always 1).
+     * Ignored in {@code SEQUENTIAL} mode (effective concurrency is always 1) and in
+     * {@code AUTO} mode (concurrency is managed adaptively by {@link AdaptiveConcurrencyTuner}).
      * Must be &ge; 1. Defaults to 4.
      */
     int concurrency() default 4;

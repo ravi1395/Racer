@@ -377,4 +377,66 @@ public class RacerProperties {
 
     /** Request-reply configuration. */
     private RequestReplyProperties requestReply = new RequestReplyProperties();
+
+    // ── Dedicated listener thread pool ───────────────────────────────────────
+
+    /**
+     * Configuration for the dedicated thread pool that executes all
+     * {@code @RacerListener} and {@code @RacerStreamListener} handler invocations.
+     * Mapped under {@code racer.thread-pool.*}.
+     *
+     * <p>When not customised, defaults mirror the limits of Reactor's built-in
+     * {@code boundedElastic()} scheduler: core={@code 2×CPU}, max={@code 10×CPU},
+     * keep-alive=60 s. The dedicated pool prevents listener workloads from competing
+     * with other {@code boundedElastic()} consumers in the application.
+     *
+     * <pre>
+     * # application.properties example
+     * racer.thread-pool.core-size=8
+     * racer.thread-pool.max-size=32
+     * racer.thread-pool.queue-capacity=2000
+     * racer.thread-pool.keep-alive-seconds=30
+     * racer.thread-pool.thread-name-prefix=racer-worker-
+     * </pre>
+     */
+    @Data
+    public static class ThreadPoolProperties {
+
+        private static final int CPU_COUNT = Runtime.getRuntime().availableProcessors();
+
+        /**
+         * Number of threads always kept alive, even when idle.
+         * Defaults to {@code 2 × availableProcessors()}.
+         */
+        private int coreSize = 2 * CPU_COUNT;
+
+        /**
+         * Maximum number of threads the pool will ever create.
+         * This is also the upper ceiling for {@link com.cheetah.racer.annotation.ConcurrencyMode#AUTO}
+         * tuning. Defaults to {@code 10 × availableProcessors()}.
+         */
+        private int maxSize = 10 * CPU_COUNT;
+
+        /**
+         * Seconds an idle thread above {@link #coreSize} is kept alive before being
+         * terminated. Defaults to {@code 60}.
+         */
+        private int keepAliveSeconds = 60;
+
+        /**
+         * Capacity of the work queue. Requests that arrive when all threads are busy
+         * and the queue is full are rejected with a {@code RejectedExecutionException}.
+         * Defaults to {@code 1000}.
+         */
+        private int queueCapacity = 1000;
+
+        /**
+         * Prefix for thread names, e.g. {@code "racer-worker-"} produces threads named
+         * {@code racer-worker-1}, {@code racer-worker-2}, …
+         */
+        private String threadNamePrefix = "racer-worker-";
+    }
+
+    /** Dedicated listener thread-pool configuration. */
+    private ThreadPoolProperties threadPool = new ThreadPoolProperties();
 }
