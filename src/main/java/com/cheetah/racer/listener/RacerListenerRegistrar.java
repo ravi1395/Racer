@@ -12,12 +12,12 @@ import com.cheetah.racer.router.RacerRouterService;
 import com.cheetah.racer.schema.RacerSchemaRegistry;
 import com.cheetah.racer.schema.SchemaValidationException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.aop.framework.AopProxyUtils;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.context.EnvironmentAware;
+import org.springframework.context.SmartLifecycle;
 import org.springframework.core.env.Environment;
 import org.springframework.data.redis.connection.ReactiveSubscription;
 import org.springframework.data.redis.listener.ChannelTopic;
@@ -34,6 +34,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -75,7 +76,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * @see RacerDeadLetterHandler
  */
 @Slf4j
-public class RacerListenerRegistrar implements BeanPostProcessor, EnvironmentAware {
+public class RacerListenerRegistrar implements BeanPostProcessor, EnvironmentAware, SmartLifecycle {
 
     private final ReactiveRedisMessageListenerContainer listenerContainer;
     private final ObjectMapper objectMapper;
@@ -118,6 +119,11 @@ public class RacerListenerRegistrar implements BeanPostProcessor, EnvironmentAwa
 
     /** Set by {@link com.cheetah.racer.backpressure.RacerBackPressureMonitor}. */
     private final AtomicBoolean backPressureActive = new AtomicBoolean(false);
+
+    // ── SmartLifecycle state ─────────────────────────────────────────────────
+    private volatile boolean   running      = false;
+    private final AtomicBoolean stopping    = new AtomicBoolean(false);
+    private final AtomicInteger inFlightCount = new AtomicInteger(0);
 
     public void setDedupService(RacerDedupService dedupService) {
         this.dedupService = dedupService;
@@ -191,19 +197,75 @@ public class RacerListenerRegistrar implements BeanPostProcessor, EnvironmentAwa
         return bean;
     }
 
-    // ── Lifecycle ────────────────────────────────────────────────────────────
+    // ── SmartLifecycle ────────────────────────────────────────────────────────
 
-    @PreDestroy
+    @Override
+    public void start() {
+        running = true;
+    }
+
+    /**
+     * Graceful stop: signals shutdown, waits for in-flight messages to drain, then
+     * disposes all subscriptions and invokes the Spring-provided {@code callback}.
+     * The wait is bounded by {@code racer.shutdown.timeout-seconds} (default 30 s).
+     */
+    @Override
+    public void stop(Runnable callback) {
+        log.info("[RACER-LISTENER] Graceful shutdown — waiting up to {}s for in-flight messages to drain...",
+                racerProperties.getShutdown().getTimeoutSeconds());
+        stopping.set(true);
+        long timeoutMs = racerProperties.getShutdown().getTimeoutSeconds() * 1000L;
+        Mono.fromRunnable(() -> awaitDrain(timeoutMs))
+                .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic())
+                .doFinally(signal -> {
+                    disposeAll();
+                    running = false;
+                    logStats();
+                    callback.run();
+                })
+                .subscribe();
+    }
+
+    @Override
     public void stop() {
+        stopping.set(true);
+        awaitDrain(racerProperties.getShutdown().getTimeoutSeconds() * 1000L);
+        disposeAll();
+        running = false;
+        logStats();
+    }
+
+    @Override
+    public boolean isRunning() { return running; }
+
+    @Override
+    public boolean isAutoStartup() { return true; }
+
+    private void awaitDrain(long timeoutMs) {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (inFlightCount.get() > 0 && System.currentTimeMillis() < deadline) {
+            try { Thread.sleep(50); } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        int remaining = inFlightCount.get();
+        if (remaining > 0) {
+            log.warn("[RACER-LISTENER] Shutdown timeout — {} message(s) still in-flight after {}ms",
+                    remaining, timeoutMs);
+        }
+    }
+
+    private void disposeAll() {
         int disposed = 0;
         for (Disposable sub : subscriptions) {
-            if (!sub.isDisposed()) {
-                sub.dispose();
-                disposed++;
-            }
+            if (!sub.isDisposed()) { sub.dispose(); disposed++; }
         }
         tuners.values().forEach(AdaptiveConcurrencyTuner::shutdown);
         log.info("[RACER-LISTENER] Stopped {} subscription(s).", disposed);
+    }
+
+    private void logStats() {
         processedCounts.forEach((id, cnt) ->
                 log.info("[RACER-LISTENER] Listener '{}': processed={} failed={}",
                         id, cnt.get(), failedCounts.getOrDefault(id, new AtomicLong()).get()));
@@ -302,7 +364,11 @@ public class RacerListenerRegistrar implements BeanPostProcessor, EnvironmentAwa
     private Mono<Void> dispatch(Object bean, Method method,
                                 ReactiveSubscription.Message<String, String> redisMsg,
                                 String listenerId, String channel, boolean dedupEnabled) {
-        return Mono.defer(() -> {
+        // Shutdown gate — reject new messages once graceful stop has been initiated
+        if (stopping.get()) {
+            return Mono.empty();
+        }
+        return Mono.<Void>defer(() -> {
 
             // 0a. Back-pressure gate — silently drop when queue is saturated
             if (backPressureActive.get()) {
@@ -332,7 +398,7 @@ public class RacerListenerRegistrar implements BeanPostProcessor, EnvironmentAwa
 
             // 1. Deduplication check
             if (dedupEnabled && dedupService != null) {
-                return dedupService.checkAndMarkProcessed(message.getId())
+                return dedupService.checkAndMarkProcessed(message.getId(), listenerId)
                         .flatMap(shouldProcess -> {
                             if (!shouldProcess) {
                                 log.debug("[RACER-LISTENER] '{}' duplicate id={} — skipped",
@@ -344,7 +410,9 @@ public class RacerListenerRegistrar implements BeanPostProcessor, EnvironmentAwa
             }
 
             return dispatchChecked(bean, method, message, listenerId, channel, cb);
-        });
+        })
+        .doOnSubscribe(s -> inFlightCount.incrementAndGet())
+        .doFinally(s -> inFlightCount.decrementAndGet());
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})

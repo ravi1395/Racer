@@ -12,7 +12,7 @@
 
 	<groupId>com.cheetah</groupId>
 	<artifactId>racer</artifactId>
-	<version>1.0.0</version>
+	<version>1.1.0</version>
 	<name>racer</name>
 	<description>Reactive Redis Messaging with Pub/Sub and Dead Letter Queue</description>
 	<url>https://github.com/ravichandrasekhar/racer</url>

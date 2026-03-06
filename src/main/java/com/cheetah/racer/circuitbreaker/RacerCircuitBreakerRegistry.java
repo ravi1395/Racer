@@ -1,8 +1,9 @@
 package com.cheetah.racer.circuitbreaker;
 
 import com.cheetah.racer.config.RacerProperties;
-import lombok.RequiredArgsConstructor;
+import com.cheetah.racer.metrics.RacerMetrics;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.lang.Nullable;
 
 import java.util.Collection;
 import java.util.concurrent.ConcurrentHashMap;
@@ -18,14 +19,27 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>Registered as a bean when {@code racer.circuit-breaker.enabled=true}.
  */
 @Slf4j
-@RequiredArgsConstructor
 public class RacerCircuitBreakerRegistry {
 
     private final RacerProperties racerProperties;
+    @Nullable private final RacerMetrics racerMetrics;
     private final ConcurrentHashMap<String, RacerCircuitBreaker> breakers = new ConcurrentHashMap<>();
+
+    /** Backward-compatible constructor (no metrics). */
+    public RacerCircuitBreakerRegistry(RacerProperties racerProperties) {
+        this(racerProperties, null);
+    }
+
+    public RacerCircuitBreakerRegistry(RacerProperties racerProperties, @Nullable RacerMetrics racerMetrics) {
+        this.racerProperties = racerProperties;
+        this.racerMetrics    = racerMetrics;
+    }
 
     /**
      * Returns the circuit breaker for the given listener ID, creating it if necessary.
+     * When {@link RacerMetrics} is available a {@code racer.circuit.breaker.state} gauge
+     * (tagged {@code listener=listenerId}) is registered for the new breaker.
+     * State encoding: {@code 0 = CLOSED}, {@code 1 = OPEN}, {@code 2 = HALF_OPEN}.
      *
      * @param listenerId the listener ID (from {@code @RacerListener(id="…")} or
      *                   {@code "<beanName>.<methodName>"})
@@ -37,12 +51,17 @@ public class RacerCircuitBreakerRegistry {
             log.info("[CIRCUIT-BREAKER] Creating breaker for '{}' — threshold={}% window={} waitSeconds={}",
                     id, cfg.getFailureRateThreshold(), cfg.getSlidingWindowSize(),
                     cfg.getWaitDurationInOpenStateSeconds());
-            return new RacerCircuitBreaker(
+            RacerCircuitBreaker cb = new RacerCircuitBreaker(
                     id,
                     cfg.getSlidingWindowSize(),
                     cfg.getFailureRateThreshold(),
                     cfg.getWaitDurationInOpenStateSeconds() * 1000L,
                     cfg.getPermittedCallsInHalfOpenState());
+            if (racerMetrics != null) {
+                // State ordinals: CLOSED=0, OPEN=1, HALF_OPEN=2
+                racerMetrics.registerCircuitBreakerStateGauge(id, () -> cb.getState().ordinal());
+            }
+            return cb;
         });
     }
 

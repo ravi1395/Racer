@@ -1,9 +1,10 @@
 package com.cheetah.racer.dedup;
 
 import com.cheetah.racer.config.RacerProperties;
-import lombok.RequiredArgsConstructor;
+import com.cheetah.racer.metrics.RacerMetrics;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
+import org.springframework.lang.Nullable;
 import reactor.core.publisher.Mono;
 
 import java.time.Duration;
@@ -29,11 +30,35 @@ import java.time.Duration;
  * @see com.cheetah.racer.annotation.RacerListener#dedup()
  */
 @Slf4j
-@RequiredArgsConstructor
 public class RacerDedupService {
 
     private final ReactiveRedisTemplate<String, String> redisTemplate;
     private final RacerProperties racerProperties;
+    @Nullable private final RacerMetrics racerMetrics;
+
+    /** Backward-compatible constructor (no metrics). */
+    public RacerDedupService(
+            ReactiveRedisTemplate<String, String> redisTemplate,
+            RacerProperties racerProperties) {
+        this(redisTemplate, racerProperties, null);
+    }
+
+    public RacerDedupService(
+            ReactiveRedisTemplate<String, String> redisTemplate,
+            RacerProperties racerProperties,
+            @Nullable RacerMetrics racerMetrics) {
+        this.redisTemplate   = redisTemplate;
+        this.racerProperties = racerProperties;
+        this.racerMetrics    = racerMetrics;
+    }
+
+    /**
+     * Atomically checks and marks a message ID as processed.
+     * Equivalent to {@link #checkAndMarkProcessed(String, String)} with {@code listenerId = null}.
+     */
+    public Mono<Boolean> checkAndMarkProcessed(String messageId) {
+        return checkAndMarkProcessed(messageId, null);
+    }
 
     /**
      * Atomically checks and marks a message ID as processed.
@@ -45,10 +70,11 @@ public class RacerDedupService {
      * <p>On Redis errors the method fails-open: the message is allowed through so that
      * a temporary Redis connectivity issue does not halt message processing.
      *
-     * @param messageId the {@link com.cheetah.racer.model.RacerMessage#getId()} value
+     * @param messageId  the {@link com.cheetah.racer.model.RacerMessage#getId()} value
+     * @param listenerId optional listener ID used for the {@code racer.dedup.duplicates} counter tag
      * @return {@code Mono<true>} = process, {@code Mono<false>} = skip (duplicate)
      */
-    public Mono<Boolean> checkAndMarkProcessed(String messageId) {
+    public Mono<Boolean> checkAndMarkProcessed(String messageId, @Nullable String listenerId) {
         if (messageId == null || messageId.isEmpty()) {
             log.debug("[RACER-DEDUP] Message has no id — skipping dedup check, allowing through");
             return Mono.just(true);
@@ -61,6 +87,11 @@ public class RacerDedupService {
         return redisTemplate.opsForValue()
                 .setIfAbsent(key, "1", ttl)
                 .defaultIfEmpty(false)
+                .doOnNext(isNew -> {
+                    if (!isNew && racerMetrics != null && listenerId != null) {
+                        racerMetrics.recordDedupDuplicate(listenerId);
+                    }
+                })
                 .onErrorResume(ex -> {
                     log.warn("[RACER-DEDUP] Redis error during dedup check for id={}: {} — failing open",
                             messageId, ex.getMessage());

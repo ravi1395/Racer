@@ -356,8 +356,10 @@ public class RacerAutoConfiguration {
     @ConditionalOnProperty(name = "racer.dedup.enabled", havingValue = "true")
     public RacerDedupService racerDedupService(
             ReactiveRedisTemplate<String, String> reactiveStringRedisTemplate,
-            RacerProperties racerProperties) {
-        return new RacerDedupService(reactiveStringRedisTemplate, racerProperties);
+            RacerProperties racerProperties,
+            Optional<RacerMetrics> racerMetrics) {
+        return new RacerDedupService(reactiveStringRedisTemplate, racerProperties,
+                racerMetrics.orElse(null));
     }
 
     // ── Phase 3: Circuit breaker ──────────────────────────────────────────────
@@ -368,8 +370,10 @@ public class RacerAutoConfiguration {
      */
     @Bean
     @ConditionalOnProperty(name = "racer.circuit-breaker.enabled", havingValue = "true")
-    public RacerCircuitBreakerRegistry racerCircuitBreakerRegistry(RacerProperties racerProperties) {
-        return new RacerCircuitBreakerRegistry(racerProperties);
+    public RacerCircuitBreakerRegistry racerCircuitBreakerRegistry(
+            RacerProperties racerProperties,
+            Optional<RacerMetrics> racerMetrics) {
+        return new RacerCircuitBreakerRegistry(racerProperties, racerMetrics.orElse(null));
     }
 
     // ── Phase 3: Back-pressure monitoring ─────────────────────────────────────

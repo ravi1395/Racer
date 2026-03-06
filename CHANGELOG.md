@@ -7,6 +7,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Planned — Phase 4 Roadmap
+
+#### 4.1 — Cluster-Aware Publishing
+- Consistent-hash routing for multi-shard topologies
+- Automatic failover when a shard becomes unavailable
+
+#### 4.2 — Distributed Tracing (OpenTelemetry)
+- Propagate W3C `traceparent` header across `RacerMessage` hops
+- Auto-instrument `@RacerListener`, `@RacerStreamListener`, and `RacerChannelPublisher`
+
+#### 4.3 — Rate Limiting
+- Per-channel token-bucket limiter stored in Redis
+- Configurable burst size and refill rate via `racer.rate-limit.*`
+
+#### 4.4 — Racer Admin UI
+- Actuator-backed REST endpoints for live listener stats, DLQ viewer, and circuit breaker state
+- Optional embedded web console
+
+---
+
+## [1.1.0] - 2026-03-06
+
+### Added
+
+#### 3.1 — Message Deduplication
+- `RacerDedupService` — idempotency via Redis `SET NX EX`; fails-open on Redis errors
+- `@RacerListener(dedup = true)` — per-listener opt-in to dedup (requires `racer.dedup.enabled=true`)
+- `racer.dedup.*` properties: `enabled`, `ttl-seconds` (default 300s), `key-prefix` (default `racer:dedup:`)
+
+#### 3.2 — Circuit Breaker
+- `RacerCircuitBreaker` — count-based sliding-window circuit breaker (no Resilience4j dependency)
+  - States: `CLOSED` → `OPEN` → `HALF_OPEN` → `CLOSED`
+  - Transitions: opens when failure rate ≥ threshold after window fills; re-opens on probe failure
+- `RacerCircuitBreakerRegistry` — per-listener lazy circuit breaker registry
+- `racer.circuit-breaker.*` properties: `enabled`, `failure-rate-threshold` (default 50%), `sliding-window-size` (default 10), `wait-duration-in-open-state-seconds` (default 30), `permitted-calls-in-half-open-state` (default 3)
+- Circuit breaker applied to both `@RacerListener` and `@RacerStreamListener` dispatch pipelines
+
+#### 3.3 — Back-pressure Signaling
+- `RacerBackPressureMonitor` — monitors the Racer thread-pool queue fill ratio
+  - Activates when fill ratio ≥ `racer.backpressure.queue-threshold`
+  - Pauses Pub/Sub dispatch (`RacerListenerRegistrar.setBackPressureActive(true)`)
+  - Slows XREADGROUP poll rate to `racer.backpressure.stream-poll-backoff-ms`
+  - Reverses both when the queue drains
+- `racer.backpressure.*` properties: `enabled`, `queue-threshold` (default 0.80), `check-interval-ms` (default 1000), `stream-poll-backoff-ms` (default 2000)
+- Stream poll interval made fully dynamic — `RacerStreamListenerRegistrar` honours runtime overrides
+
+#### 3.4 — Consumer Group Lag Dashboard
+- `RacerConsumerLagMonitor` — periodic `XPENDING` scraper; exports one `racer.stream.consumer.lag` Micrometer gauge per (stream, group) pair
+- WARN log when lag exceeds `racer.consumer-lag.lag-warn-threshold`
+- `racer.consumer-lag.*` properties: `enabled`, `scrape-interval-seconds` (default 15), `lag-warn-threshold` (default 1000)
+
+#### Infrastructure
+- `racerListenerExecutor` exposed as a named `ThreadPoolExecutor` bean
+- Thread-pool metrics (`racer.thread-pool.*`) registered automatically when Micrometer is present
+- All Phase 3 beans are **off by default** via `@ConditionalOnProperty` — zero impact on existing deployments
+
+#### Observability Polish
+- `racer.circuit.breaker.state{listener}` Micrometer gauge — numeric state per listener: `0` = CLOSED, `1` = OPEN, `2` = HALF_OPEN
+- `racer.backpressure.active` Micrometer gauge — `1` while back-pressure is in effect, `0` otherwise (live value, not snapshot)
+- `racer.backpressure.events{state}` Micrometer counter — increments on each activation (`state=active`) and deactivation (`state=inactive`) transition
+- `racer.dedup.duplicates{listener}` Micrometer counter — counts duplicate messages suppressed per listener
+
+#### Graceful Shutdown (`SmartLifecycle`)
+- `RacerListenerRegistrar` now implements `SmartLifecycle` (`phase = Integer.MAX_VALUE`) — unsubscribes from channels only after in-flight dispatches complete
+- `RacerStreamListenerRegistrar` now implements `SmartLifecycle` — stops polling loops after pending stream-record processing drains
+- In-flight request count tracked with `AtomicInteger`; `stop(Runnable)` is fully async (non-blocking via `boundedElastic`) so Spring's shutdown thread is never blocked
+- Stopping gate added to both `dispatch()` and `processRecord()` — new messages are rejected gracefully when shutdown is in progress, not mid-stream
+- `racer.shutdown.timeout-seconds` (default `30`) controls the maximum drain wait before forcing disposal
+
+### Changed
+- `@RacerListener` gains a `dedup` boolean attribute (default `false`)
+- `RacerAutoConfiguration` wires optional dedup, circuit breaker, and back-pressure beans into both listener registrars via setter injection
+- `RacerDedupService` now accepts an optional `RacerMetrics` reference; `checkAndMarkProcessed` overloaded with `(messageId, listenerId)` for per-listener duplicate counters
+- `RacerCircuitBreakerRegistry` now accepts an optional `RacerMetrics` reference; registers the state gauge lazily on first `getOrCreate` call
+
+---
+
 ## [1.0.0] - 2026-03-05
 
 ### Added

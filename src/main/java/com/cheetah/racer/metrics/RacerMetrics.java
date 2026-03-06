@@ -194,4 +194,71 @@ public class RacerMetrics {
                 .tag("stream", streamKey)
                 .register(registry);
     }
+
+    // -----------------------------------------------------------------------
+    // Circuit breaker metrics
+    // -----------------------------------------------------------------------
+
+    /**
+     * Registers a gauge that reports the circuit breaker state for a listener.
+     * Encoded as: {@code 0 = CLOSED}, {@code 1 = OPEN}, {@code 2 = HALF_OPEN}.
+     *
+     * @param listenerId    the listener ID, used as the {@code listener} tag value
+     * @param stateSupplier supplies the numeric state on each scrape
+     */
+    public void registerCircuitBreakerStateGauge(String listenerId, Supplier<Number> stateSupplier) {
+        Gauge.builder("racer.circuit.breaker.state", stateSupplier, s -> s.get().doubleValue())
+                .description("Circuit breaker state per listener: 0=CLOSED 1=OPEN 2=HALF_OPEN")
+                .tag("listener", listenerId)
+                .register(registry);
+    }
+
+    // -----------------------------------------------------------------------
+    // Back-pressure metrics
+    // -----------------------------------------------------------------------
+
+    /**
+     * Registers a gauge that reports whether back-pressure is currently active.
+     * Value is {@code 1.0} when active and {@code 0.0} when inactive.
+     * Should be called once at startup.
+     *
+     * @param activeSupplier supplier that returns 1 (active) or 0 (inactive)
+     */
+    public void registerBackPressureActiveGauge(Supplier<Number> activeSupplier) {
+        Gauge.builder("racer.backpressure.active", activeSupplier, s -> s.get().doubleValue())
+                .description("1 if Racer back-pressure is currently active, 0 otherwise")
+                .register(registry);
+    }
+
+    /**
+     * Increments {@code racer.backpressure.events} with the given state tag.
+     *
+     * @param state {@code "active"} when back-pressure activates,
+     *              {@code "inactive"} when it is relieved
+     */
+    public void recordBackPressureEvent(String state) {
+        Counter.builder("racer.backpressure.events")
+                .description("Number of back-pressure activation / deactivation transitions")
+                .tag("state", state)
+                .register(registry)
+                .increment();
+    }
+
+    // -----------------------------------------------------------------------
+    // Deduplication metrics
+    // -----------------------------------------------------------------------
+
+    /**
+     * Increments {@code racer.dedup.duplicates} — a message with the given listener
+     * tag was suppressed because it was already processed within the dedup TTL window.
+     *
+     * @param listenerId the listener ID, used as the {@code listener} tag value
+     */
+    public void recordDedupDuplicate(String listenerId) {
+        Counter.builder("racer.dedup.duplicates")
+                .description("Number of duplicate messages suppressed by the dedup service")
+                .tag("listener", listenerId)
+                .register(registry)
+                .increment();
+    }
 }

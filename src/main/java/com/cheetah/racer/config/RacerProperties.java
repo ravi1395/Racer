@@ -585,4 +585,20 @@ public class RacerProperties {
 
     /** Consumer-group lag configuration (3.4). */
     private ConsumerLagProperties consumerLag = new ConsumerLagProperties();
+
+    // ── Graceful shutdown ─────────────────────────────────────────────────────
+
+    @Data
+    public static class ShutdownProperties {
+
+        /**
+         * Maximum time (in seconds) to wait for in-flight messages to finish processing
+         * before forcing shutdown of {@code @RacerListener} and {@code @RacerStreamListener}
+         * pipelines. Defaults to {@code 30}.
+         */
+        private int timeoutSeconds = 30;
+    }
+
+    /** Graceful-shutdown configuration. */
+    private ShutdownProperties shutdown = new ShutdownProperties();
 }

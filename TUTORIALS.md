@@ -29,6 +29,10 @@ Each tutorial is self-contained and builds on a running Racer instance.
 18. [Tutorial 18 — Message Priority Channels](#tutorial-18--message-priority-channels)
 19. [Tutorial 19 — Declarative Channel Consumers (@RacerListener)](#tutorial-19--declarative-channel-consumers-racerlistener)
 20. [Tutorial 20 — Performance Tuning: Dedicated Thread Pool & Adaptive Concurrency](#tutorial-20--performance-tuning-dedicated-thread-pool--adaptive-concurrency)
+21. [Tutorial 21 — Message Deduplication](#tutorial-21--message-deduplication)
+22. [Tutorial 22 — Circuit Breaker per Listener](#tutorial-22--circuit-breaker-per-listener)
+23. [Tutorial 23 — Back-Pressure Monitoring](#tutorial-23--back-pressure-monitoring)
+24. [Tutorial 24 — Consumer Group Lag Dashboard](#tutorial-24--consumer-group-lag-dashboard)
 
 ---
 
@@ -3347,3 +3351,614 @@ curl -s http://localhost:8080/actuator/health | jq .status
 ```
 
 A self-tuning, isolated messaging backbone — maximum throughput without manual concurrency management, full thread isolation from the rest of the application, and zero duplication between annotation attributes and channel properties.
+
+---
+
+## Tutorial 21 — Message Deduplication
+
+### What you'll learn
+- Enable idempotent message processing with `racer.dedup.enabled=true`
+- Understand how Racer tracks processed message IDs in Redis with a configurable TTL
+- Force a duplicate and observe it being silently dropped
+- Read the `racer.dedup.duplicates` counter in Actuator
+
+### Prerequisites
+- Tutorial 1 complete (`racer-demo` on port 8080, Redis running)
+- Tutorial 3 or Tutorial 19 completed (you have at least one `@RacerListener` running)
+
+---
+
+### How it works
+
+Every `RacerMessage` carries an auto-generated UUID `id` field.
+When dedup is enabled, `RacerDedupService` calls Redis `SET key 1 EX <ttl> NX`:
+- **First delivery** — the command succeeds; the message is processed normally.
+- **Duplicate** — the key already exists; `NX` fails; the message is dropped without calling your handler.
+
+```
+RacerMessage arrives
+       │
+       ▼
+RacerDedupService.checkAndMarkProcessed(id, listenerId)
+       │
+       ├─ SET racer:dedup:<id> 1 EX 3600 NX → true  ──→ process normally
+       └─ SET … NX → false  ──→ drop; increment racer.dedup.duplicates{listener}
+```
+
+The TTL is a sliding window: any message whose ID is sent again within the window is suppressed.
+After the TTL, the ID expires and the message could be re-processed (intentional replay is safe).
+
+---
+
+### Step 1 — Enable dedup in `application.properties`
+
+```properties
+racer.dedup.enabled=true
+racer.dedup.ttl-seconds=3600        # keep IDs for 1 hour (default)
+racer.dedup.key-prefix=racer:dedup: # Redis key prefix (default)
+```
+
+---
+
+### Step 2 — Add a listener to observe dedup in action
+
+```java
+@Slf4j
+@Component
+public class InvoiceListener {
+
+    @RacerListener(channel = "racer:invoices", id = "invoice-processor")
+    public void onInvoice(RacerMessage msg) {
+        log.info("Processing invoice id={} payload={}", msg.getId(), msg.getPayload());
+    }
+}
+```
+
+---
+
+### Step 3 — Publish the same message ID twice
+
+```bash
+# Grab any UUID for the test — reuse the same ID both times
+MSG_ID=$(uuidgen)
+
+redis-cli PUBLISH racer:invoices \
+  "{\"id\":\"$MSG_ID\",\"payload\":\"{\\\"amount\\\":99}\",\"channel\":\"racer:invoices\"}"
+
+# Publish again with the SAME id
+redis-cli PUBLISH racer:invoices \
+  "{\"id\":\"$MSG_ID\",\"payload\":\"{\\\"amount\\\":99}\",\"channel\":\"racer:invoices\"}"
+```
+
+You should see the handler log **once**, not twice:
+```
+Processing invoice id=<MSG_ID> payload={"amount":99}
+```
+
+The second delivery is silently discarded.
+
+---
+
+### Step 4 — Confirm the duplicate counter via Actuator
+
+```bash
+curl -s http://localhost:8080/actuator/metrics/racer.dedup.duplicates \
+  | python3 -m json.tool
+```
+
+Expected (after the second publish above):
+```json
+{
+  "name": "racer.dedup.duplicates",
+  "measurements": [{"statistic":"COUNT","value":1.0}],
+  "availableTags": [{"tag":"listener","values":["invoice-processor"]}]
+}
+```
+
+---
+
+### Step 5 — Check the Redis key directly
+
+```bash
+redis-cli GET "racer:dedup:$MSG_ID"   # → "1"
+redis-cli TTL "racer:dedup:$MSG_ID"   # → seconds remaining
+```
+
+After the TTL expires the entry is gone and the same ID can be re-processed if needed.
+
+---
+
+### What you built
+
+```
+Publisher (redis-cli / @RacerPublisher)    Redis               racer-demo
+────────────────────────────────────────────────────────────────────────────────
+PUBLISH racer:invoices {id: "X", ...}
+  ──────────────────────────────────────→ Pub/Sub
+                                                   ──────────────→ DedupService
+                                                                   SET racer:dedup:X NX EX 3600
+                                                                   → true  ──→ handler invoked
+PUBLISH racer:invoices {id: "X", ...}   (same ID)
+  ──────────────────────────────────────→ Pub/Sub
+                                                   ──────────────→ DedupService
+                                                                   SET … NX → false
+                                                                   → dropped; counter++
+```
+
+Exactly-once processing in a pub/sub system with a single property and zero handler-side changes.
+
+---
+
+## Tutorial 22 — Circuit Breaker per Listener
+
+### What you'll learn
+- Protect a listener from a misbehaving downstream by enabling the circuit breaker
+- Configure failure threshold, success threshold, and wait duration
+- Observe the CLOSED → OPEN → HALF_OPEN → CLOSED state transitions
+- Read the `racer.circuit.breaker.state` gauge from Actuator
+
+### Prerequisites
+- Tutorial 1 complete (`racer-demo` on port 8080, Redis running)
+- Tutorial 19 or Tutorial 3 completed (at least one `@RacerListener`)
+
+---
+
+### How it works
+
+Racer wraps each `@RacerListener` / `@RacerStreamListener` with its own `RacerCircuitBreaker`.
+The breaker counts consecutive handler failures:
+
+```
+Handler invocation
+       │
+       ├─ success  → cb.onSuccess()  consecutive-failure count resets
+       └─ failure  → cb.onFailure()  count increments
+                        │
+                        └─ count ≥ failureThreshold  ──→ OPEN (drop messages)
+                                                              │
+                                                    waitDurationMs passes
+                                                              │
+                                                           HALF_OPEN (allow 1 probe)
+                                                              │
+                                                  ┌─ probe succeeds → CLOSED
+                                                  └─ probe fails    → OPEN again
+```
+
+The gauge `racer.circuit.breaker.state{listener}` reports: **0 = CLOSED, 1 = OPEN, 2 = HALF_OPEN**.
+
+---
+
+### Step 1 — Enable the circuit breaker
+
+```properties
+racer.circuit-breaker.enabled=true
+racer.circuit-breaker.failure-threshold=3       # open after 3 consecutive failures
+racer.circuit-breaker.success-threshold=2       # close after 2 consecutive successes
+racer.circuit-breaker.wait-duration-ms=10000    # stay OPEN for 10 s
+```
+
+---
+
+### Step 2 — Add a flaky listener
+
+```java
+@Slf4j
+@Component
+public class PaymentListener {
+
+    private final AtomicInteger callCount = new AtomicInteger();
+
+    @RacerListener(channel = "racer:payments", id = "payment-processor")
+    public void onPayment(RacerMessage msg) {
+        int n = callCount.incrementAndGet();
+        if (n <= 3) {
+            // Simulate downstream failure on first 3 calls
+            throw new RuntimeException("Payment gateway unavailable (call " + n + ")");
+        }
+        log.info("Payment processed: {}", msg.getPayload());
+    }
+}
+```
+
+---
+
+### Step 3 — Trigger the breaker
+
+Publish 5 messages in quick succession:
+
+```bash
+for i in $(seq 1 5); do
+  redis-cli PUBLISH racer:payments \
+    "{\"id\":\"$(uuidgen)\",\"payload\":\"{\\\"amount\\\":$i0}\",\"channel\":\"racer:payments\"}"
+  sleep 0.1
+done
+```
+
+After the 3rd message you'll see in the logs:
+```
+[RACER-LISTENER] 'payment-processor' circuit breaker OPEN after 3 consecutive failure(s)
+[RACER-LISTENER] 'payment-processor' circuit OPEN — dropping message <id4>
+[RACER-LISTENER] 'payment-processor' circuit OPEN — dropping message <id5>
+```
+
+---
+
+### Step 4 — Read the circuit breaker gauge
+
+```bash
+curl -s http://localhost:8080/actuator/metrics/racer.circuit.breaker.state \
+  | python3 -m json.tool
+```
+
+While OPEN the response shows:
+```json
+{
+  "name": "racer.circuit.breaker.state",
+  "measurements": [{"statistic":"VALUE","value":1.0}],
+  "availableTags": [{"tag":"listener","values":["payment-processor"]}]
+}
+```
+
+`0` = CLOSED (healthy), `1` = OPEN (tripped), `2` = HALF_OPEN (probing).
+
+---
+
+### Step 5 — Wait for recovery
+
+After `waitDurationMs` (10 s in this example) the breaker moves to HALF_OPEN.
+The next message is allowed through as a *probe*. Because `callCount` is now > 3 the handler succeeds, meets the `successThreshold`, and the breaker returns to CLOSED:
+
+```
+[RACER-LISTENER] 'payment-processor' circuit breaker moved to HALF_OPEN
+Payment processed: {"amount":60}
+[RACER-LISTENER] 'payment-processor' circuit breaker CLOSED after 2 consecutive success(es)
+```
+
+Check the gauge again — it should return to `0.0`.
+
+---
+
+### What you built
+
+```
+@RacerListener(id = "payment-processor")
+        │
+        ▼
+RacerCircuitBreakerRegistry.getOrCreate("payment-processor")
+        │
+        ├─ state = CLOSED  → dispatch message to handler
+        │        failure++
+        │        3rd failure → state = OPEN
+        │
+        ├─ state = OPEN    → drop message (no handler call)
+        │        after 10 s → state = HALF_OPEN
+        │
+        └─ state = HALF_OPEN → dispatch probe
+                 success  → successThreshold met → state = CLOSED
+                 failure  → state = OPEN
+
+Gauge: racer.circuit.breaker.state{listener="payment-processor"}
+       0 = CLOSED | 1 = OPEN | 2 = HALF_OPEN
+```
+
+One property, per-listener circuit isolation — failed downstream calls stop generating noise in Redis without any manual intervention.
+
+---
+
+## Tutorial 23 — Back-Pressure Monitoring
+
+### What you'll learn
+- Enable Racer's back-pressure monitor to slow stream polling when the worker queue fills up
+- Configure the activation threshold and the back-pressure poll interval
+- See the monitor activate and deactivate in the logs and via Actuator gauges
+- Read `racer.backpressure.active` and `racer.backpressure.events` metrics
+
+### Prerequisites
+- Tutorial 1 complete (`racer-demo` on port 8080, Redis running)
+- Tutorial 16 (Consumer Scaling) or Tutorial 20 (Thread Pool Tuning) recommended but not required
+- At least one `@RacerStreamListener` registered (the monitor only affects stream-polling intervals)
+
+---
+
+### How it works
+
+Racer uses a dedicated `ThreadPoolExecutor` (`racer.thread-pool.*`) for handler execution.
+`RacerBackPressureMonitor` polls this executor's queue depth every `checkIntervalMs`:
+
+```
+Every checkIntervalMs:
+  queueFillRatio = queue.size() / queueCapacity
+  │
+  ├─ ratio ≥ queueThreshold  AND  NOT active
+  │        → set active = true
+  │          notify RacerStreamListenerRegistrar: poll every streamPollBackoffMs
+  │          increment racer.backpressure.events{state="active"}
+  │
+  └─ ratio < queueThreshold  AND  active
+           → set active = false
+             notify RacerStreamListenerRegistrar: restore normal poll interval
+             increment racer.backpressure.events{state="inactive"}
+```
+
+The gauge `racer.backpressure.active` is `1` while suppression is in effect, `0` otherwise.
+
+---
+
+### Step 1 — Enable back-pressure and tune the thread pool
+
+```properties
+# Small thread pool so back-pressure triggers quickly in the demo
+racer.thread-pool.core-pool-size=2
+racer.thread-pool.max-pool-size=4
+racer.thread-pool.queue-capacity=10
+
+# Back-pressure settings
+racer.backpressure.enabled=true
+racer.backpressure.queue-threshold=0.70        # activate at 70% queue fill (7 of 10)
+racer.backpressure.check-interval-ms=500       # poll every 500 ms
+racer.backpressure.stream-poll-backoff-ms=5000 # slow stream reads to every 5 s
+```
+
+---
+
+### Step 2 — Add a slow stream listener
+
+```java
+@Slf4j
+@Component
+public class SlowProcessorListener {
+
+    @RacerStreamListener(
+            streamKey = "racer:slow-stream",
+            group     = "slow-group",
+            id        = "slow-processor",
+            pollIntervalMs = 200)
+    public Mono<Void> process(RacerMessage msg) {
+        log.info("Processing: {}", msg.getId());
+        // Simulate slow handler — 3 seconds per message
+        return Mono.delay(Duration.ofSeconds(3)).then();
+    }
+}
+```
+
+---
+
+### Step 3 — Flood the stream to fill the queue
+
+```bash
+for i in $(seq 1 20); do
+  redis-cli XADD racer:slow-stream '*' data \
+    "{\"id\":\"$(uuidgen)\",\"payload\":\"{\\\"n\\\":$i}\",\"channel\":\"racer:slow-stream\"}"
+done
+```
+
+Within a couple of seconds you should see in the logs:
+
+```
+[RACER-BACKPRESSURE] Queue fill 0.80 ≥ threshold 0.70 — activating back-pressure
+[RACER-STREAM-LISTENER] Back-pressure active — poll interval overridden to 5000 ms
+```
+
+---
+
+### Step 4 — Check the active gauge
+
+```bash
+curl -s http://localhost:8080/actuator/metrics/racer.backpressure.active \
+  | python3 -m json.tool
+```
+
+While the queue is saturated:
+```json
+{
+  "name": "racer.backpressure.active",
+  "measurements": [{"statistic":"VALUE","value":1.0}]
+}
+```
+
+---
+
+### Step 5 — Wait for draining
+
+As the slow handlers complete, the queue depth drops below the threshold and back-pressure deactivates:
+
+```
+[RACER-BACKPRESSURE] Queue fill 0.50 < threshold 0.70 — deactivating back-pressure
+[RACER-STREAM-LISTENER] Back-pressure inactive — poll interval restored to 200 ms
+```
+
+Check events:
+```bash
+curl -s http://localhost:8080/actuator/metrics/racer.backpressure.events \
+  | python3 -m json.tool
+```
+
+```json
+{
+  "name": "racer.backpressure.events",
+  "availableTags": [{"tag":"state","values":["active","inactive"]}]
+}
+```
+
+Query each tag:
+```bash
+# Activation count
+curl -s "http://localhost:8080/actuator/metrics/racer.backpressure.events?tag=state:active"
+
+# Deactivation count
+curl -s "http://localhost:8080/actuator/metrics/racer.backpressure.events?tag=state:inactive"
+```
+
+---
+
+### What you built
+
+```
+ThreadPoolExecutor (racer.thread-pool.*)
+   queue.size()            ← checked every 500 ms
+        │
+        ├─ ≥ 70%  → activate
+        │            racer.backpressure.active  = 1
+        │            racer.backpressure.events{state=active}++
+        │            stream poll interval      → 5000 ms  (throttled)
+        │
+        └─ < 70%  → deactivate
+                     racer.backpressure.active  = 0
+                     racer.backpressure.events{state=inactive}++
+                     stream poll interval      → 200 ms   (restored)
+```
+
+Automatic, feedback-driven flow control — no message drops, no manual configuration changes, and full observability through standard Micrometer metrics.
+
+---
+
+## Tutorial 24 — Consumer Group Lag Dashboard
+
+### What you'll learn
+- Enable consumer-group lag monitoring with `racer.consumer-lag.enabled=true`
+- Understand how Racer measures pending entries with `XPENDING`
+- Read the `racer.stream.consumer.lag` gauge in Actuator
+- Scrape the metric with Prometheus and visualise it in Grafana
+
+### Prerequisites
+- Tutorial 1 complete (`racer-demo` on port 8080, Redis running)
+- At least one `@RacerStreamListener` registered on a Redis Stream
+
+---
+
+### How it works
+
+A `RacerConsumerLagMonitor` polls each registered `(streamKey, consumerGroup)` pair on a fixed schedule.
+For each pair it calls `XPENDING <stream> <group> - + 1` and records the count of unacknowledged entries:
+
+```
+Every lagCheckIntervalMs:
+  for each (stream, group) tracked by RacerStreamListenerRegistrar:
+    pendingCount = XPENDING stream group - + 1 → (entry count)
+    Gauge: racer.stream.consumer.lag{stream, group} = pendingCount
+```
+
+A lag that grows continuously indicates that your consumers cannot keep up.
+
+---
+
+### Step 1 — Enable consumer lag monitoring
+
+```properties
+racer.consumer-lag.enabled=true
+racer.consumer-lag.check-interval-ms=5000   # poll XPENDING every 5 s (default)
+```
+
+No code changes are required — `RacerConsumerLagMonitor` discovers all streams and groups automatically from the stream listener registrar.
+
+---
+
+### Step 2 — Add a stream listener
+
+```java
+@Slf4j
+@Component
+public class OrderStreamListener {
+
+    @RacerStreamListener(
+            streamKey = "racer:orders-stream",
+            group     = "order-processors",
+            id        = "order-stream-processor")
+    public void onOrder(RacerMessage msg) {
+        log.info("Received order: {}", msg.getPayload());
+    }
+}
+```
+
+Start the application. The lag monitor registers the `(racer:orders-stream, order-processors)` pair automatically.
+
+---
+
+### Step 3 — Produce some unconsumed backlog
+
+Stop the application, publish messages, and restart — or simply publish faster than the consumer can process:
+
+```bash
+for i in $(seq 1 50); do
+  redis-cli XADD racer:orders-stream '*' data \
+    "{\"id\":\"$(uuidgen)\",\"payload\":\"{\\\"orderId\\\":$i}\",\"channel\":\"racer:orders-stream\"}"
+done
+```
+
+---
+
+### Step 4 — Read the lag gauge
+
+```bash
+curl -s http://localhost:8080/actuator/metrics/racer.stream.consumer.lag \
+  | python3 -m json.tool
+```
+
+Example response when 50 messages are pending:
+```json
+{
+  "name": "racer.stream.consumer.lag",
+  "measurements": [{"statistic":"VALUE","value":50.0}],
+  "availableTags": [
+    {"tag":"stream","values":["racer:orders-stream"]},
+    {"tag":"group", "values":["order-processors"]}
+  ]
+}
+```
+
+Once the application catches up the value drops to `0`.
+
+---
+
+### Step 5 — Scrape with Prometheus and graph in Grafana
+
+Add `racer-demo` to your Prometheus `scrape_configs`:
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: racer-demo
+    static_configs:
+      - targets: ['host.docker.internal:8080']
+    metrics_path: /actuator/prometheus
+```
+
+In Grafana create a new panel with this PromQL query:
+
+```promql
+racer_stream_consumer_lag{stream="racer:orders-stream", group="order-processors"}
+```
+
+Add a threshold line at `100` and configure an alert rule — you now have a production-ready consumer-lag dashboard.
+
+---
+
+### Optional — per-listener alert
+
+Because the gauge is tagged with both `stream` and `group`, you can alert on individual consumers:
+
+```promql
+# Alert fires when any consumer group is more than 500 messages behind
+racer_stream_consumer_lag > 500
+```
+
+---
+
+### What you built
+
+```
+Redis Stream: racer:orders-stream
+Consumer Group: order-processors
+        │
+        ▼
+RacerConsumerLagMonitor  (every 5 s)
+   XPENDING racer:orders-stream order-processors - + 1
+        │
+        ▼
+Gauge: racer.stream.consumer.lag{stream="racer:orders-stream", group="order-processors"}
+        │
+        ▼
+Prometheus scrape  →  Grafana panel  →  alert on threshold
+```
+
+Real-time visibility into stream back-log with zero code changes — just one property and standard Micrometer / Prometheus tooling.

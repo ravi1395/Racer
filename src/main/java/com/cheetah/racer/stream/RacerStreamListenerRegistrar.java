@@ -11,12 +11,12 @@ import com.cheetah.racer.metrics.RacerMetrics;
 import com.cheetah.racer.model.RacerMessage;
 import com.cheetah.racer.schema.RacerSchemaRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.aop.framework.AopProxyUtils;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.context.EnvironmentAware;
+import org.springframework.context.SmartLifecycle;
 import org.springframework.core.env.Environment;
 import org.springframework.data.redis.connection.stream.*;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
@@ -34,6 +34,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -55,7 +57,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * @see RacerStreamListener
  */
 @Slf4j
-public class RacerStreamListenerRegistrar implements BeanPostProcessor, EnvironmentAware {
+public class RacerStreamListenerRegistrar implements BeanPostProcessor, EnvironmentAware, SmartLifecycle {
 
     private static final String DEFAULT_DATA_FIELD = "data";
     private static final int    GROUP_CREATION_RETRIES = 5;
@@ -93,6 +95,11 @@ public class RacerStreamListenerRegistrar implements BeanPostProcessor, Environm
 
     /** (streamKey, group) pairs that have been registered, used by {@link RacerConsumerLagMonitor}. */
     private final Map<String, String> trackedStreamGroups = new ConcurrentHashMap<>();
+
+    // ── SmartLifecycle state ─────────────────────────────────────────────────
+    private volatile boolean    running       = false;
+    private final AtomicBoolean stopping      = new AtomicBoolean(false);
+    private final AtomicInteger inFlightCount = new AtomicInteger(0);
 
     public void setDedupService(RacerDedupService dedupService) {
         this.dedupService = dedupService;
@@ -149,13 +156,72 @@ public class RacerStreamListenerRegistrar implements BeanPostProcessor, Environm
         return bean;
     }
 
-    @PreDestroy
+    @Override
+    public void start() {
+        running = true;
+    }
+
+    /**
+     * Graceful stop: signals shutdown, waits for in-flight stream records to drain
+     * (bounded by {@code racer.shutdown.timeout-seconds}), then disposes all polling loops.
+     * XACK has already been issued by the time a record completes, so no entries are orphaned.
+     */
+    @Override
+    public void stop(Runnable callback) {
+        log.info("[RACER-STREAM-LISTENER] Graceful shutdown — waiting up to {}s for in-flight entries to drain...",
+                racerProperties.getShutdown().getTimeoutSeconds());
+        stopping.set(true);
+        long timeoutMs = racerProperties.getShutdown().getTimeoutSeconds() * 1000L;
+        Mono.fromRunnable(() -> awaitDrain(timeoutMs))
+                .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic())
+                .doFinally(signal -> {
+                    disposeAll();
+                    running = false;
+                    logStats();
+                    callback.run();
+                })
+                .subscribe();
+    }
+
+    @Override
     public void stop() {
+        stopping.set(true);
+        awaitDrain(racerProperties.getShutdown().getTimeoutSeconds() * 1000L);
+        disposeAll();
+        running = false;
+        logStats();
+    }
+
+    @Override
+    public boolean isRunning() { return running; }
+
+    @Override
+    public boolean isAutoStartup() { return true; }
+
+    private void awaitDrain(long timeoutMs) {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (inFlightCount.get() > 0 && System.currentTimeMillis() < deadline) {
+            try { Thread.sleep(50); } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        int remaining = inFlightCount.get();
+        if (remaining > 0) {
+            log.warn("[RACER-STREAM-LISTENER] Shutdown timeout — {} entry(ies) still in-flight after {}ms",
+                    remaining, timeoutMs);
+        }
+    }
+
+    private void disposeAll() {
         int disposed = 0;
         for (Disposable sub : subscriptions) {
             if (!sub.isDisposed()) { sub.dispose(); disposed++; }
         }
         log.info("[RACER-STREAM-LISTENER] Stopped {} polling loop(s).", disposed);
+    }
+
+    private void logStats() {
         processedCounts.forEach((id, cnt) ->
                 log.info("[RACER-STREAM-LISTENER] Listener '{}': processed={} failed={}",
                         id, cnt.get(), failedCounts.getOrDefault(id, new AtomicLong()).get()));
@@ -248,8 +314,14 @@ public class RacerStreamListenerRegistrar implements BeanPostProcessor, Environm
                     log.debug("[RACER-STREAM-LISTENER] XREADGROUP on '{}' returned empty or error: {}", streamKey, ex.getMessage());
                     return Flux.empty();
                 })
-                .flatMap(record ->
-                        processRecord(bean, method, streamKey, group, record, listenerId));
+                .flatMap(record -> {
+                    if (stopping.get()) {
+                        return ackRecord(streamKey, group, record.getId());
+                    }
+                    inFlightCount.incrementAndGet();
+                    return processRecord(bean, method, streamKey, group, record, listenerId)
+                            .doFinally(s -> inFlightCount.decrementAndGet());
+                });
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -288,7 +360,7 @@ public class RacerStreamListenerRegistrar implements BeanPostProcessor, Environm
 
         // 0b. Deduplication check
         if (dedupService != null) {
-            return dedupService.checkAndMarkProcessed(message.getId())
+            return dedupService.checkAndMarkProcessed(message.getId(), listenerId)
                     .flatMap(shouldProcess -> {
                         if (!shouldProcess) {
                             log.debug("[RACER-STREAM-LISTENER] '{}' duplicate id={} — skipping record {}",

@@ -75,6 +75,11 @@ public class RacerBackPressureMonitor {
         log.info("[RACER-BACKPRESSURE] Monitor started — threshold={:.0f}% checkInterval={}ms",
                 bp.getQueueThreshold() * 100, bp.getCheckIntervalMs());
 
+        // Register a single persistent gauge for the current active/inactive state
+        if (racerMetrics != null) {
+            racerMetrics.registerBackPressureActiveGauge(() -> backPressureActive.get() ? 1 : 0);
+        }
+
         monitorLoop = Flux.interval(Duration.ofMillis(bp.getCheckIntervalMs()))
                 .subscribe(tick -> checkAndApply(), ex ->
                         log.error("[RACER-BACKPRESSURE] Monitor loop error: {}", ex.getMessage(), ex));
@@ -111,7 +116,7 @@ public class RacerBackPressureMonitor {
             if (streamListenerRegistrar != null) {
                 streamListenerRegistrar.setBackPressurePollIntervalMs(bp.getStreamPollBackoffMs());
             }
-            recordBackPressureMetric(1);
+            if (racerMetrics != null) racerMetrics.recordBackPressureEvent("active");
 
         } else if (!shouldActivate && wasActive) {
             backPressureActive.set(false);
@@ -124,15 +129,7 @@ public class RacerBackPressureMonitor {
             if (streamListenerRegistrar != null) {
                 streamListenerRegistrar.setBackPressurePollIntervalMs(0); // 0 = revert to annotation value
             }
-            recordBackPressureMetric(0);
-        }
-    }
-
-    private void recordBackPressureMetric(int activeValue) {
-        if (racerMetrics != null) {
-            // Re-use the stream lag gauge registration pattern — report 1 = active, 0 = inactive
-            racerMetrics.registerStreamConsumerLagGauge("racer.backpressure.active",
-                    () -> activeValue);
+            if (racerMetrics != null) racerMetrics.recordBackPressureEvent("inactive");
         }
     }
 

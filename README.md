@@ -1913,7 +1913,16 @@ This section explains how it compares architecturally to dedicated message broke
 
 ## Roadmap & Implementation Status
 
-All roadmap items have been **fully implemented**. Below is a summary of what was built for each item.
+All roadmap items through Phase 3 have been **fully implemented**. See [CHANGELOG.md](CHANGELOG.md) for the full release notes.
+
+### Phase 4 — Planned
+
+| # | Feature | Description |
+|---|---------|-------------|
+| 4.1 | **Cluster-Aware Publishing** | Consistent-hash routing across shards; automatic failover |
+| 4.2 | **Distributed Tracing** | OpenTelemetry W3C `traceparent` propagation through `RacerMessage` hops |
+| 4.3 | **Rate Limiting** | Per-channel Redis token-bucket via `racer.rate-limit.*` |
+| 4.4 | **Admin UI** | Actuator-backed REST endpoints + embedded web console for live stats, DLQ viewer, and circuit breaker state |
 
 ---
 
