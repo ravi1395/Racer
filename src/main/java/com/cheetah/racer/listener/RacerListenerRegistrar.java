@@ -69,7 +69,7 @@ import java.util.concurrent.atomic.AtomicLong;
  *   <li>{@link ConcurrencyMode#CONCURRENT} — effective concurrency is {@code max(1, concurrency)}.</li>
  * </ul>
  *
- * <p>All active subscriptions are disposed cleanly on application shutdown (via {@link PreDestroy}).
+ * <p>All active subscriptions are disposed cleanly on application shutdown via {@link org.springframework.context.SmartLifecycle}.
  *
  * @see RacerListener
  * @see ConcurrencyMode

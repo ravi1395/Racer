@@ -27,7 +27,7 @@ public final class RedisChannels {
 
     // ── Request-Reply (Pub/Sub) ──────────────────────────────────────────
 
-    /** Prefix for ephemeral reply channels: racer:reply:<correlationId> */
+    /** Prefix for ephemeral reply channels: {@code racer:reply:<correlationId>} */
     public static final String REPLY_CHANNEL_PREFIX = "racer:reply:";
 
     // ── Request-Reply (Streams) ──────────────────────────────────────────
@@ -35,7 +35,7 @@ public final class RedisChannels {
     /** Stream key where the server writes requests */
     public static final String REQUEST_STREAM = "racer:stream:requests";
 
-    /** Prefix for per-correlation response streams: racer:stream:response:<correlationId> */
+    /** Prefix for per-correlation response streams: {@code racer:stream:response:<correlationId>} */
     public static final String RESPONSE_STREAM_PREFIX = "racer:stream:response:";
 
     /** Consumer group used by the client to read the request stream */
