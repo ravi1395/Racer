@@ -6,22 +6,26 @@ import com.cheetah.racer.model.RacerReply;
 import com.cheetah.racer.model.RacerRequest;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.FactoryBean;
+import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.EnvironmentAware;
 import org.springframework.core.env.Environment;
 import org.springframework.data.redis.connection.stream.*;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
-import org.springframework.data.redis.listener.ChannelTopic;
+import org.springframework.data.redis.listener.PatternTopic;
 import org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;
 import org.springframework.lang.Nullable;
-import reactor.core.publisher.Flux;
+import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.time.Duration;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * {@link FactoryBean} that creates a reactive proxy for a {@link com.cheetah.racer.annotation.RacerClient}
@@ -29,7 +33,7 @@ import java.util.Map;
  * caller over Redis Pub/Sub or Streams.
  */
 @Slf4j
-public class RacerClientFactoryBean<T> implements FactoryBean<T>, EnvironmentAware {
+public class RacerClientFactoryBean<T> implements FactoryBean<T>, EnvironmentAware, InitializingBean, DisposableBean {
 
     private final Class<T> clientInterface;
 
@@ -40,8 +44,53 @@ public class RacerClientFactoryBean<T> implements FactoryBean<T>, EnvironmentAwa
 
     private Environment environment;
 
+    /** Pending pub/sub requests waiting for a reply, keyed by correlationId. */
+    private final ConcurrentHashMap<String, Sinks.One<RacerReply>> pendingReplies = new ConcurrentHashMap<>();
+    @Nullable private volatile Disposable pubSubReplySubscription;
+
     public RacerClientFactoryBean(Class<T> clientInterface) {
         this.clientInterface = clientInterface;
+    }
+
+    /**
+     * Eagerly establishes a single pattern subscription to {@code racer:reply:*} so that
+     * the Redis SUBSCRIBE is confirmed well before the first request is published.
+     * This eliminates the per-request SUBSCRIBE/PUBLISH race condition.
+     */
+    @Override
+    public void afterPropertiesSet() {
+        if (listenerContainer != null) {
+            pubSubReplySubscription = listenerContainer
+                    .receive(PatternTopic.of("racer:reply:*"))
+                    .subscribe(
+                            msg -> routePubSubReply(msg.getMessage()),
+                            err -> log.error("[RACER-CLIENT] Pub/Sub reply listener error: {}", err.getMessage()));
+            log.debug("[RACER-CLIENT] Subscribed to reply pattern 'racer:reply:*'");
+        }
+    }
+
+    @Override
+    public void destroy() {
+        Disposable sub = pubSubReplySubscription;
+        if (sub != null && !sub.isDisposed()) {
+            sub.dispose();
+        }
+    }
+
+    /** Routes an incoming pub/sub reply JSON to the waiting {@link Sinks.One}, if any. */
+    private void routePubSubReply(String json) {
+        try {
+            RacerReply reply = objectMapper.readValue(json, RacerReply.class);
+            String correlationId = reply.getCorrelationId();
+            if (correlationId != null) {
+                Sinks.One<RacerReply> sink = pendingReplies.remove(correlationId);
+                if (sink != null) {
+                    sink.tryEmitValue(reply);
+                }
+            }
+        } catch (Exception e) {
+            log.debug("[RACER-CLIENT] Failed to parse pub/sub reply: {}", e.getMessage());
+        }
     }
 
     @Override
@@ -126,32 +175,24 @@ public class RacerClientFactoryBean<T> implements FactoryBean<T>, EnvironmentAwa
                     "Pub/Sub request-reply requires a ReactiveRedisMessageListenerContainer bean"));
         }
 
-        String replyChannel = request.getReplyTo();
         String correlationId = request.getCorrelationId();
 
-        // Subscribe BEFORE publishing to avoid missing the reply
-        Mono<RacerReply> replyMono = listenerContainer
-                .receive(ChannelTopic.of(replyChannel))
-                .next()
-                .flatMap(msg -> {
-                    try {
-                        return Mono.just(objectMapper.readValue(msg.getMessage(), RacerReply.class));
-                    } catch (Exception e) {
-                        return Mono.error(e);
-                    }
-                })
-                .filter(r -> correlationId.equals(r.getCorrelationId()))
-                .timeout(timeout);
+        // Register the sink BEFORE publishing so no reply is ever missed.
+        // Sinks.one() buffers the value, so a reply that arrives before asMono() is
+        // subscribed is still delivered correctly.
+        Sinks.One<RacerReply> replySink = Sinks.one();
+        pendingReplies.put(correlationId, replySink);
 
-        Mono<Void> publishMono;
         try {
             String json = objectMapper.writeValueAsString(request);
-            publishMono = redisTemplate.convertAndSend(channel, json).then();
+            return redisTemplate.convertAndSend(channel, json)
+                    .then(replySink.asMono())
+                    .timeout(timeout)
+                    .doFinally(signal -> pendingReplies.remove(correlationId));
         } catch (Exception e) {
+            pendingReplies.remove(correlationId);
             return Mono.error(e);
         }
-
-        return replyMono.doOnSubscribe(s -> publishMono.subscribe());
     }
 
     // ── Stream request-reply ──────────────────────────────────────────────────
