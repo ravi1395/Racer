@@ -26,7 +26,7 @@ import java.lang.annotation.*;
  * <p>Requires {@link EnableRacer} to be active so that {@code RacerRouterService} is
  * registered in the application context.
  */
-@Target(ElementType.TYPE)
+@Target({ElementType.TYPE, ElementType.METHOD})
 @Retention(RetentionPolicy.RUNTIME)
 @Documented
 public @interface RacerRoute {

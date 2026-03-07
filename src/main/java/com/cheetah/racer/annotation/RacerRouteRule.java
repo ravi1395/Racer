@@ -45,4 +45,16 @@ public @interface RacerRouteRule {
      * If empty, the original message sender is preserved.
      */
     String sender() default "";
+
+    /**
+     * Which part of the message envelope to match against.
+     * Defaults to {@link RouteMatchSource#PAYLOAD} (JSON field lookup).
+     */
+    RouteMatchSource source() default RouteMatchSource.PAYLOAD;
+
+    /**
+     * Action to take when this rule matches.
+     * Defaults to {@link RouteAction#FORWARD} (re-publish and skip local handler).
+     */
+    RouteAction action() default RouteAction.FORWARD;
 }

@@ -149,10 +149,13 @@ racer/                                   # Library (single-module Maven project)
     │   │   │   ├── RacerWebAutoConfiguration.java     # Wires opt-in web controllers
     │   │   │   └── RacerProperties.java               # racer.* property binding
     │   │   ├── listener/
+    │   │   │   ├── AbstractRacerRegistrar.java        # Base BeanPostProcessor + SmartLifecycle for listener registrars
     │   │   │   ├── RacerDeadLetterHandler.java        # SPI: forward failed msgs to DLQ
     │   │   │   └── RacerListenerRegistrar.java        # BeanPostProcessor for @RacerListener
     │   │   ├── metrics/
-    │   │   │   └── RacerMetrics.java                  # Micrometer counters/timers/gauge
+    │   │   │   ├── RacerMetrics.java                  # Micrometer counters/timers/gauges (implements RacerMetricsPort)
+    │   │   │   ├── RacerMetricsPort.java              # SPI: metrics abstraction — implement to provide custom instrumentation
+    │   │   │   └── NoOpRacerMetrics.java              # No-op implementation used when RacerMetrics bean is absent
     │   │   ├── model/
     │   │   │   ├── RacerMessage.java     # Fire-and-forget message
     │   │   │   ├── RacerRequest.java     # Request-reply request
@@ -161,6 +164,7 @@ racer/                                   # Library (single-module Maven project)
     │   │   ├── processor/
     │   │   │   └── RacerPublisherFieldProcessor.java  # BeanPostProcessor for @RacerPublisher
     │   │   ├── publisher/
+    │   │   │   ├── MessageEnvelopeBuilder.java        # Static utility: builds serialised JSON message envelopes
     │   │   │   ├── RacerChannelPublisher.java         # Publisher interface
     │   │   │   ├── RacerChannelPublisherImpl.java     # Pub/Sub implementation (+ metrics)
     │   │   │   ├── RacerPublisherRegistry.java        # Multi-channel registry
@@ -176,9 +180,12 @@ racer/                                   # Library (single-module Maven project)
     │   │   │   ├── DlqReprocessorService.java         # Republish-only DLQ reprocessor
     │   │   │   └── RacerRetentionService.java         # Scheduled XTRIM + DLQ age pruning
     │   │   ├── stream/
-    │   │   │   └── RacerStreamListenerRegistrar.java  # BeanPostProcessor for @RacerStreamListener
+    │   │   │   ├── RacerStreamListenerRegistrar.java  # BeanPostProcessor for @RacerStreamListener
+    │   │   │   └── RacerStreamUtils.java              # Static utility: XGROUP CREATE (ensureGroup) + XACK (ackRecord)
     │   │   ├── tx/
     │   │   │   └── RacerTransaction.java              # Atomic ordered multi-channel publish
+    │   │   ├── util/
+    │   │   │   └── RacerChannelResolver.java          # Static utility: resolves channel/stream key from annotation + RacerProperties
     │   │   └── web/
     │   │       ├── DlqController.java                 # Conditional on racer.web.dlq-enabled
     │   │       ├── RetentionController.java           # Conditional on racer.web.retention-enabled
@@ -715,7 +722,7 @@ public void handleOrder(String rawPayload) {
 
 **Metrics:** each listener exposes `getProcessedCount(id)` and `getFailedCount(id)` via `RacerListenerRegistrar`, and records to Micrometer under `racer.listener.processed` / `racer.listener.failed` tags.
 
-**Lifecycle:** subscriptions are started in `postProcessAfterInitialization` and disposed in `@PreDestroy` — no manual cleanup required.
+**Lifecycle:** subscriptions are started in `postProcessAfterInitialization` and disposed via `SmartLifecycle.stop()`, which gracefully drains in-flight messages before shutting down (configurable via `racer.shutdown.timeout-seconds`). No manual cleanup required.
 
 ---
 
@@ -1310,7 +1317,7 @@ See the full schema API documentation and `RacerSchemaRegistry` javadoc for endp
 
 ## Observability & Metrics
 
-Racer integrates with **Micrometer** via `RacerMetrics` (auto-configured when `micrometer-core` is on the classpath). The `racer-demo` module includes `spring-boot-starter-actuator` and `micrometer-registry-prometheus`, all served on port **8080**.
+Racer integrates with **Micrometer** via `RacerMetrics` (auto-configured when `micrometer-core` is on the classpath). When `RacerMetrics` is absent from the context, a `NoOpRacerMetrics` implementation is used automatically — no null checks required in any component. To provide a custom metrics backend, implement the `RacerMetricsPort` interface and register the bean. The `racer-demo` module includes `spring-boot-starter-actuator` and `micrometer-registry-prometheus`, all served on port **8080**.
 
 ### Actuator endpoints
 
@@ -1615,7 +1622,7 @@ Producer    @PublishResult(channelRef="orders")
 
 Consumer    @RacerListener(channel="racer:orders", mode=CONCURRENT, concurrency=4)
             → RacerListenerRegistrar subscribes via ReactiveRedisMessageListenerContainer
-            → Message dispatched on boundedElastic() via flatMap(concurrency=4)
+            → Message dispatched on the dedicated Racer thread pool (racer-worker-*) via flatMap(concurrency=4)
             → If throws: RacerDeadLetterHandler.enqueue(message, error)
             → DLQ written to racer:dlq (Redis List, leftPush)
 ```
@@ -2166,7 +2173,7 @@ racer.priority.channels=racer:orders,racer:notifications
 - `@RacerListener` annotation — marks a method as a reactive channel subscriber. Attributes: `channel`, `channelRef`, `mode` (`SEQUENTIAL` / `CONCURRENT`), `concurrency`, `id`
 - `ConcurrencyMode` enum — `SEQUENTIAL` (concurrency = 1, ordered) and `CONCURRENT` (up to N parallel workers)
 - `RacerDeadLetterHandler` interface (`com.cheetah.racer.listener`) — SPI in `racer` so the registrar can forward failed messages to the DLQ without a direct dependency on `racer-client`
-- `RacerListenerRegistrar` (BeanPostProcessor) — scans all Spring beans for `@RacerListener` methods at startup; resolves channel names (direct or via alias); subscribes to `ReactiveRedisMessageListenerContainer`; dispatches on `boundedElastic()` using `flatMap(handler, effectiveConcurrency)`; runs schema validation and router checks; records `processedCount`/`failedCount` per listener; forwards exceptions to `RacerDeadLetterHandler`; disposes all subscriptions on `@PreDestroy`
+- `RacerListenerRegistrar` (BeanPostProcessor, extends `AbstractRacerRegistrar`) — scans all Spring beans for `@RacerListener` methods at startup; resolves channel names (direct or via alias); subscribes to `ReactiveRedisMessageListenerContainer`; dispatches on the dedicated Racer thread pool (`racer-worker-*`) using `flatMap(handler, effectiveConcurrency)`; runs schema validation and router checks; records `processedCount`/`failedCount` per listener; forwards exceptions to `RacerDeadLetterHandler`; disposes all subscriptions gracefully via `SmartLifecycle.stop()`
 - Flexible parameter dispatch: `RacerMessage` → full envelope; `String` → raw payload; any type `T` → `objectMapper.readValue(payload, T.class)`
 - `DeadLetterQueueService` updated to `implements RacerDeadLetterHandler`
 - `RacerAutoConfiguration` — registers `racerListenerRegistrar` bean under `@ConditionalOnBean(ReactiveRedisMessageListenerContainer.class)` with all collaborators (`ObjectMapper`, `RacerPublisherRegistry`, `RacerRouterService`, `RacerSchemaValidator`, `RacerDeadLetterHandler`, `MeterRegistry`) as `Optional<>` parameters

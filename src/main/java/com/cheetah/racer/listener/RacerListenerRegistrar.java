@@ -2,6 +2,8 @@ package com.cheetah.racer.listener;
 
 import com.cheetah.racer.annotation.ConcurrencyMode;
 import com.cheetah.racer.annotation.RacerListener;
+import com.cheetah.racer.annotation.RacerRoute;
+import com.cheetah.racer.annotation.Routed;
 import com.cheetah.racer.circuitbreaker.RacerCircuitBreaker;
 import com.cheetah.racer.circuitbreaker.RacerCircuitBreakerRegistry;
 import com.cheetah.racer.config.RacerProperties;
@@ -10,7 +12,9 @@ import com.cheetah.racer.metrics.NoOpRacerMetrics;
 import com.cheetah.racer.metrics.RacerMetrics;
 import com.cheetah.racer.metrics.RacerMetricsPort;
 import com.cheetah.racer.model.RacerMessage;
+import com.cheetah.racer.router.CompiledRouteRule;
 import com.cheetah.racer.router.RacerRouterService;
+import com.cheetah.racer.router.RouteDecision;
 import com.cheetah.racer.schema.RacerSchemaRegistry;
 import com.cheetah.racer.schema.SchemaValidationException;
 import com.cheetah.racer.util.RacerChannelResolver;
@@ -28,6 +32,9 @@ import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
 
 import java.lang.reflect.Method;
+import java.lang.reflect.Parameter;
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -100,12 +107,27 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
     /** Set by {@link com.cheetah.racer.backpressure.RacerBackPressureMonitor}. */
     private final java.util.concurrent.atomic.AtomicBoolean backPressureActive = new java.util.concurrent.atomic.AtomicBoolean(false);
 
+    /** Pre-compiled per-listener routing rules (from method-level {@code @RacerRoute}). */
+    private final Map<String, List<CompiledRouteRule>> perListenerRules = new ConcurrentHashMap<>();
+
+    /** Ordered list of message interceptors applied before every handler invocation. */
+    private List<RacerMessageInterceptor> interceptors = Collections.emptyList();
+
     public void setDedupService(RacerDedupService dedupService) {
         this.dedupService = dedupService;
     }
 
     public void setCircuitBreakerRegistry(RacerCircuitBreakerRegistry circuitBreakerRegistry) {
         this.circuitBreakerRegistry = circuitBreakerRegistry;
+    }
+
+    /**
+     * Injects the ordered list of {@link RacerMessageInterceptor} beans.
+     * Called by {@link com.cheetah.racer.config.RacerAutoConfiguration} after the
+     * application context has collected all interceptor beans.
+     */
+    public void setInterceptors(List<RacerMessageInterceptor> interceptors) {
+        this.interceptors = interceptors != null ? interceptors : Collections.emptyList();
     }
 
     /**
@@ -199,6 +221,15 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
         method.setAccessible(true);
 
         registerListenerStats(listenerId);
+
+        // Per-listener @RacerRoute on the handler method
+        RacerRoute methodRoute = method.getAnnotation(RacerRoute.class);
+        if (methodRoute != null && racerRouterService != null) {
+            List<CompiledRouteRule> compiled = racerRouterService.compile(methodRoute);
+            perListenerRules.put(listenerId, compiled);
+            log.info("[RACER-LISTENER] Per-listener route rules for '{}': {} rule(s)",
+                    listenerId, compiled.size());
+        }
 
         final boolean dedupEnabled = ann.dedup();
 
@@ -323,14 +354,60 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
                                        RacerMessage message,
                                        String listenerId, String channel,
                                        @Nullable RacerCircuitBreaker cb) {
-        // 2. Content-based routing — re-publish & skip local dispatch if a rule matches
-        if (racerRouterService != null && racerRouterService.route(message)) {
-            log.debug("[RACER-LISTENER] '{}' message id={} routed — skipping local dispatch",
+        // 2. Routing — per-listener rules first, then global
+        RouteDecision routeDecision = RouteDecision.PASS;
+        List<CompiledRouteRule> listenerRules = perListenerRules.get(listenerId);
+        if (listenerRules != null && racerRouterService != null) {
+            routeDecision = racerRouterService.evaluate(message, listenerRules);
+        }
+        if (routeDecision == RouteDecision.PASS && racerRouterService != null) {
+            routeDecision = racerRouterService.route(message);
+        }
+
+        if (routeDecision == RouteDecision.DROPPED) {
+            log.debug("[RACER-LISTENER] '{}' message id={} dropped by routing rule",
+                    listenerId, message.getId());
+            return Mono.empty();
+        }
+        if (routeDecision == RouteDecision.DROPPED_TO_DLQ) {
+            log.debug("[RACER-LISTENER] '{}' message id={} dropped to DLQ by routing rule",
+                    listenerId, message.getId());
+            if (cb != null) cb.onFailure();
+            return enqueueDeadLetter(message, new IllegalStateException("Dropped to DLQ by routing rule"))
+                    .doOnTerminate(() -> incrementFailed(listenerId)).then();
+        }
+        if (routeDecision == RouteDecision.FORWARDED) {
+            log.debug("[RACER-LISTENER] '{}' message id={} forwarded — skipping local dispatch",
                     listenerId, message.getId());
             return Mono.empty();
         }
 
-        // 3. Schema validation
+        final boolean wasForwarded = routeDecision == RouteDecision.FORWARDED_AND_PROCESS;
+
+        // 3. Interceptor chain → invoke local handler
+        return buildInterceptorChain(message, listenerId, channel, method)
+                .flatMap(intercepted -> invokeLocal(bean, method, intercepted, listenerId, channel, cb, wasForwarded));
+    }
+
+    /** Builds the ordered interceptor chain around a single message. */
+    private Mono<RacerMessage> buildInterceptorChain(RacerMessage message,
+                                                      String listenerId, String channel, Method method) {
+        if (interceptors.isEmpty()) return Mono.just(message);
+        InterceptorContext ctx = new InterceptorContext(listenerId, channel, method);
+        Mono<RacerMessage> chain = Mono.just(message);
+        for (RacerMessageInterceptor interceptor : interceptors) {
+            chain = chain.flatMap(msg -> interceptor.intercept(msg, ctx));
+        }
+        return chain;
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private Mono<Void> invokeLocal(Object bean, Method method,
+                                   RacerMessage message,
+                                   String listenerId, String channel,
+                                   @Nullable RacerCircuitBreaker cb,
+                                   boolean wasForwarded) {
+        // 4. Schema validation
         if (racerSchemaRegistry != null) {
             try {
                 racerSchemaRegistry.validateForConsume(channel, message.getPayload());
@@ -344,12 +421,12 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
             }
         }
 
-        // 4. Resolve method argument
-        Object arg;
+        // 5. Resolve method arguments
+        Object[] args;
         try {
-            arg = resolveArgument(method, message);
+            args = resolveArguments(method, message, wasForwarded);
         } catch (Exception e) {
-            log.error("[RACER-LISTENER] '{}' — cannot resolve argument for id={}: {}",
+            log.error("[RACER-LISTENER] '{}' — cannot resolve arguments for id={}: {}",
                     listenerId, message.getId(), e.getMessage());
             if (cb != null) cb.onFailure();
             return enqueueDeadLetter(message, e)
@@ -357,15 +434,12 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
                     .then();
         }
 
-        // 5. Invoke and handle return type
-        final Object resolvedArg = arg;
-        final boolean isNoArg = method.getParameterCount() == 0;
+        // 6. Invoke and handle return type
+        final Object[] resolvedArgs = args;
         final RacerMessage captured = message;
 
         Mono<Void> invocation = Mono
-                .fromCallable(() -> isNoArg
-                        ? method.invoke(bean)
-                        : method.invoke(bean, resolvedArg))
+                .fromCallable(() -> method.invoke(bean, resolvedArgs))
                 .subscribeOn(listenerScheduler)
                 .flatMap(result -> {
                     if (result instanceof Mono<?> mono) {
@@ -397,22 +471,44 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     /**
-     * Resolves the value of a method argument from the incoming {@link RacerMessage}
-     * based solely on the declared parameter type.
+     * Resolves the array of arguments to pass to the listener method.
+     *
+     * <p>Supported parameter patterns:
+     * <ul>
+     *   <li>Zero parameters — returns an empty array.</li>
+     *   <li>One primary parameter ({@link RacerMessage}, {@link String}, or any POJO)
+     *       — resolved from the message.</li>
+     *   <li>A {@code boolean} parameter annotated with {@link Routed}
+     *       — injected with {@code wasForwarded}, indicating that the message matched a
+     *       {@code FORWARD_AND_PROCESS} rule.</li>
+     * </ul>
      */
-    private Object resolveArgument(Method method, RacerMessage message) throws Exception {
-        if (method.getParameterCount() == 0) {
-            return null; // no-arg receiver — unusual but supported
-        }
-        Class<?> paramType = method.getParameterTypes()[0];
+    private Object[] resolveArguments(Method method, RacerMessage message,
+                                      boolean wasForwarded) throws Exception {
+        int count = method.getParameterCount();
+        if (count == 0) return new Object[0];
 
-        if (RacerMessage.class.isAssignableFrom(paramType)) {
-            return message;
+        Object[] args = new Object[count];
+        boolean primaryHandled = false;
+
+        for (int i = 0; i < count; i++) {
+            Parameter param = method.getParameters()[i];
+            if (param.isAnnotationPresent(Routed.class)) {
+                args[i] = wasForwarded;
+            } else if (!primaryHandled) {
+                args[i] = resolvePrimaryArgument(param.getType(), message);
+                primaryHandled = true;
+            } else {
+                throw new IllegalArgumentException(
+                        "Unsupported parameter at index " + i + " in " + method);
+            }
         }
-        if (String.class.equals(paramType)) {
-            return message.getPayload();
-        }
-        // Flexible deserialization: parse payload JSON into the declared POJO type
+        return args;
+    }
+
+    private Object resolvePrimaryArgument(Class<?> paramType, RacerMessage message) throws Exception {
+        if (RacerMessage.class.isAssignableFrom(paramType)) return message;
+        if (String.class.equals(paramType))               return message.getPayload();
         return objectMapper.readValue(message.getPayload(), paramType);
     }
 

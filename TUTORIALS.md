@@ -2873,7 +2873,7 @@ RacerListenerRegistrar (BeanPostProcessor)
   └─ routes through schema validator (optional)
   └─ routes through RacerRouterService (optional)
   └─ deserialises payload → RacerMessage | String | POJO<T>
-  └─ dispatches to annotated method on boundedElastic()
+  └─ dispatches to annotated method on the dedicated Racer thread pool (racer-worker-*)
         │
         ├─ SEQUENTIAL mode: flatMap(concurrency = 1)
         └─ CONCURRENT mode: flatMap(concurrency = N)
@@ -3139,7 +3139,7 @@ Declarative, annotation-driven channel subscriptions with zero boilerplate — n
 
 ### Background — Why a Dedicated Thread Pool?
 
-By default, Reactor uses `Schedulers.boundedElastic()` as the shared work-stealing pool for all blocking work. When many `@RacerListener` methods run concurrently they compete for threads with every other part of your application (Spring WebFlux, WebClient, Lettuce I/O, etc.) — this causes latency spikes under load.
+Racer uses a **dedicated `ThreadPoolExecutor`** for all `@RacerListener` and `@RacerStreamListener` dispatches (thread name prefix: `racer-worker-`). Listener workload is fully isolated from Spring’s shared `Schedulers.boundedElastic()` pool (used by WebFlux, WebClient, Lettuce I/O, etc.), eliminating thread contention under load.
 
 Racer creates an **isolated `ThreadPoolExecutor`** for all listener dispatch operations:
 - Racer listeners never block Spring's HTTP worker threads

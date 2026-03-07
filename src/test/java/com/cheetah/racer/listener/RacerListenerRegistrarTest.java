@@ -4,6 +4,7 @@ import com.cheetah.racer.annotation.ConcurrencyMode;
 import com.cheetah.racer.annotation.RacerListener;
 import com.cheetah.racer.config.RacerProperties;
 import com.cheetah.racer.metrics.RacerMetrics;
+import com.cheetah.racer.router.RouteDecision;
 import com.cheetah.racer.model.RacerMessage;
 import com.cheetah.racer.router.RacerRouterService;
 import com.cheetah.racer.schema.RacerSchemaRegistry;
@@ -113,7 +114,7 @@ class RacerListenerRegistrarTest {
         when(environment.resolvePlaceholders(anyString())).thenAnswer(inv -> inv.getArgument(0));
 
         // Default: router never claims a message (no routing rules)
-        when(racerRouterService.route(any())).thenReturn(false);
+        when(racerRouterService.route(any())).thenReturn(RouteDecision.PASS);
 
         // Default: DLQ enqueue succeeds
         when(deadLetterHandler.enqueue(any(), any())).thenReturn(Mono.empty());
@@ -382,7 +383,7 @@ class RacerListenerRegistrarTest {
     void listener_whenRouterClaimsMessage_skipsLocalDispatch() throws Exception {
         RacerMessage msg = buildMessage("racer:test", "routed");
 
-        when(racerRouterService.route(any())).thenReturn(true); // router claims it
+        when(racerRouterService.route(any())).thenReturn(RouteDecision.FORWARDED); // router claims it
 
         when(listenerContainer.receive(any(ChannelTopic.class)))
                 .thenAnswer(inv -> {

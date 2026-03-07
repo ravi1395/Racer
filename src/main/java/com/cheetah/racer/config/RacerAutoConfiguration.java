@@ -6,6 +6,7 @@ import com.cheetah.racer.circuitbreaker.RacerCircuitBreakerRegistry;
 import com.cheetah.racer.dedup.RacerDedupService;
 import com.cheetah.racer.listener.RacerDeadLetterHandler;
 import com.cheetah.racer.listener.RacerListenerRegistrar;
+import com.cheetah.racer.listener.RacerMessageInterceptor;
 import com.cheetah.racer.metrics.RacerMetrics;
 import com.cheetah.racer.poll.RacerPollRegistrar;
 import com.cheetah.racer.processor.RacerPublisherFieldProcessor;
@@ -33,6 +34,7 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.EnableAspectJAutoProxy;
+import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;
@@ -40,6 +42,8 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -267,7 +271,8 @@ public class RacerAutoConfiguration {
             Optional<RacerRouterService> racerRouterService,
             Optional<RacerDeadLetterHandler> deadLetterHandler,
             Optional<RacerDedupService> racerDedupService,
-            Optional<RacerCircuitBreakerRegistry> racerCircuitBreakerRegistry) {
+            Optional<RacerCircuitBreakerRegistry> racerCircuitBreakerRegistry,
+            ApplicationContext applicationContext) {
         RacerListenerRegistrar registrar = new RacerListenerRegistrar(
                 listenerContainer,
                 objectMapper,
@@ -279,6 +284,10 @@ public class RacerAutoConfiguration {
                 deadLetterHandler.orElse(null));
         racerDedupService.ifPresent(registrar::setDedupService);
         racerCircuitBreakerRegistry.ifPresent(registrar::setCircuitBreakerRegistry);
+        List<RacerMessageInterceptor> interceptors = new ArrayList<>(
+                applicationContext.getBeansOfType(RacerMessageInterceptor.class).values());
+        AnnotationAwareOrderComparator.sort(interceptors);
+        registrar.setInterceptors(interceptors);
         return registrar;
     }
 

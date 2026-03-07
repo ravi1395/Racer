@@ -19,6 +19,7 @@ import reactor.core.publisher.Mono;
 
 import java.util.Map;
 
+import static com.cheetah.racer.router.RouteDecision.*;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -145,9 +146,7 @@ class RacerRouterServiceTest {
         RacerMessage msg = RacerMessage.create(
                 "racer:messages", "{\"type\":\"ORDER\"}", "svc");
 
-        boolean routed = routerService.route(msg);
-
-        assertThat(routed).isTrue();
+        assertThat(routerService.route(msg)).isEqualTo(FORWARDED);
     }
 
     @Test
@@ -155,9 +154,7 @@ class RacerRouterServiceTest {
         RacerMessage msg = RacerMessage.create(
                 "racer:messages", "{\"type\":\"AUDIT\"}", "svc");
 
-        boolean routed = routerService.route(msg);
-
-        assertThat(routed).isFalse();
+        assertThat(routerService.route(msg)).isEqualTo(PASS);
     }
 
     @Test
@@ -165,9 +162,7 @@ class RacerRouterServiceTest {
         RacerMessage msg = RacerMessage.create(
                 "racer:messages", "not json at all", "svc");
 
-        boolean routed = routerService.route(msg);
-
-        assertThat(routed).isFalse();
+        assertThat(routerService.route(msg)).isEqualTo(PASS);
     }
 
     // ------------------------------------------------------------------
@@ -185,6 +180,6 @@ class RacerRouterServiceTest {
 
         assertThat(emptyRouter.hasRules()).isFalse();
         assertThat(emptyRouter.route(
-                RacerMessage.create("ch", "{\"type\":\"ORDER\"}", "s"))).isFalse();
+                RacerMessage.create("ch", "{\"type\":\"ORDER\"}", "s"))).isEqualTo(PASS);
     }
 }

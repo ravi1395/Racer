@@ -16,14 +16,29 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Holds a {@link RacerChannelPublisher} instance for every channel alias declared
- * in {@code racer.channels.*} properties, plus one for the default channel.
+ * Factory and registry of {@link RacerChannelPublisher} instances.
  *
- * <h3>Look-up order used by {@code @RacerPublisher} and {@code @PublishResult}</h3>
+ * <p>One publisher is created for every channel alias declared under
+ * {@code racer.channels.*}, plus a single publisher for the
+ * {@link com.cheetah.racer.config.RacerProperties#getDefaultChannel() default channel}
+ * (registered under the internal alias {@value #DEFAULT_ALIAS}).
+ *
+ * <p>Publishers are constructed once at application startup via {@link #init()} and
+ * shared for the lifetime of the application.  Each publisher optionally delegates to
+ * {@link RacerMetricsPort} for Micrometer instrumentation and to
+ * {@link RacerSchemaRegistry} for outbound payload validation; both are no-ops when
+ * the corresponding beans are absent from the application context.
+ *
+ * <h3>Look-up order (used by {@code @RacerPublisher} and {@code @PublishResult})</h3>
  * <ol>
- *   <li>If an alias is given, look it up in the registry.</li>
- *   <li>If not found (or no alias), fall back to the default channel publisher.</li>
+ *   <li>If a non-blank alias is provided, return the publisher registered for that alias.</li>
+ *   <li>If the alias is {@code null}, blank, or unknown, fall back to the default publisher
+ *       and log a warning in the unknown-alias case.</li>
  * </ol>
+ *
+ * @see RacerChannelPublisherImpl
+ * @see RacerMetricsPort
+ * @see RacerSchemaRegistry
  */
 @Slf4j
 public class RacerPublisherRegistry {
@@ -37,15 +52,26 @@ public class RacerPublisherRegistry {
     @Nullable
     private final RacerSchemaRegistry schemaRegistry;
 
-    /** alias → publisher */
+    /** alias → publisher; populated by {@link #init()}. */
     private final Map<String, RacerChannelPublisher> registry = new HashMap<>();
 
+    /**
+     * Minimal constructor — no metrics or schema validation.
+     * Suitable for tests and simple applications that do not require instrumentation.
+     */
     public RacerPublisherRegistry(RacerProperties properties,
                                   ReactiveRedisTemplate<String, String> redisTemplate,
                                   ObjectMapper objectMapper) {
         this(properties, redisTemplate, objectMapper, Optional.empty(), Optional.empty());
     }
 
+    /**
+     * Constructor with optional Micrometer metrics.
+     * Schema validation is disabled when this constructor is used.
+     *
+     * @param metricsOpt present when a {@link RacerMetrics} bean exists in the context;
+     *                   empty values fall back to a no-op implementation
+     */
     public RacerPublisherRegistry(RacerProperties properties,
                                   ReactiveRedisTemplate<String, String> redisTemplate,
                                   ObjectMapper objectMapper,
@@ -53,6 +79,15 @@ public class RacerPublisherRegistry {
         this(properties, redisTemplate, objectMapper, metricsOpt, Optional.empty());
     }
 
+    /**
+     * Full constructor used by {@link com.cheetah.racer.config.RacerAutoConfiguration}.
+     *
+     * @param properties        Racer configuration properties
+     * @param redisTemplate     reactive Redis template for publishing
+     * @param objectMapper      JSON serializer
+     * @param metricsOpt        optional Micrometer metrics; absent → {@link com.cheetah.racer.metrics.NoOpRacerMetrics}
+     * @param schemaRegistryOpt optional JSON-Schema validator; absent → validation skipped
+     */
     public RacerPublisherRegistry(RacerProperties properties,
                                   ReactiveRedisTemplate<String, String> redisTemplate,
                                   ObjectMapper objectMapper,
@@ -65,6 +100,12 @@ public class RacerPublisherRegistry {
         this.schemaRegistry = schemaRegistryOpt.orElse(null);
     }
 
+    /**
+     * Builds and registers publishers for all configured channels.
+     * Called automatically by Spring after dependency injection is complete.
+     * The default channel is always registered; named channel aliases are added
+     * for every entry in {@code racer.channels.*} that has a non-blank {@code name}.
+     */
     @PostConstruct
     public void init() {
         // Register the default channel
@@ -102,7 +143,10 @@ public class RacerPublisherRegistry {
         return publisher;
     }
 
-    /** Returns all registered aliases (including {@code __default__}). */
+    /**
+     * Returns an unmodifiable snapshot of all registered alias-to-publisher mappings,
+     * including the internal {@value #DEFAULT_ALIAS} entry.
+     */
     public Map<String, RacerChannelPublisher> getAll() {
         return Map.copyOf(registry);
     }
