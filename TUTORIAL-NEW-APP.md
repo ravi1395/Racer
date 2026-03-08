@@ -218,6 +218,10 @@ racer.default-channel=racer:inventory:events
 racer.channels.stock.name=racer:inventory:stock
 racer.channels.stock.async=true
 racer.channels.stock.sender=inventory-service
+# Optional: switch this channel to durable delivery without changing listener code
+# racer.channels.stock.durable=true
+# racer.channels.stock.durable-group=inventory-consumer-group
+# racer.channels.stock.stream-key=racer:inventory:stock:stream
 
 # Named channel: alerts — sync, low-latency critical alerts
 racer.channels.alerts.name=racer:inventory:alerts
@@ -486,11 +490,11 @@ public class InventoryAuditConsumer {
     private final List<String> auditLog = Collections.synchronizedList(new ArrayList<>());
 
     /**
-     * @RacerListener binds this method to racer:inventory:audit at startup.
+     * @RacerListener binds this method to the 'audit' alias at startup.
      * RacerListenerRegistrar (BeanPostProcessor) handles subscription,
      * deserialization, DLQ forwarding, and metrics — no boilerplate needed.
      */
-    @RacerListener(channel = "racer:inventory:audit", id = "audit-consumer")
+    @RacerListener(channelRef = "audit", id = "audit-consumer")
     public void onAuditEvent(RacerMessage message) {
         String entry = "[" + message.getTimestamp() + "] "
                 + message.getSender() + " → " + message.getPayload();
@@ -771,7 +775,7 @@ InventoryService.createItem()  ──── @PublishResult ──►  racer:inve
     ▼ (if qty < 10)                                            │
 alertsPublisher.publishAsync()  ───────────────────►  racer:inventory:alerts
                                                                │
-                                              @RacerListener("racer:inventory:audit")
+                                              @RacerListener(channelRef="audit")
                                               (InventoryAuditConsumer.onAuditEvent)
                                               appends to in-memory audit log
                                                                │
@@ -786,7 +790,7 @@ alertsPublisher.publishAsync()  ────────────────
 | `@RacerPublisher("alerts")` | `InventoryService` | Injects a publisher bound to `racer:inventory:alerts` |
 | `@PublishResult(channelRef="stock")` | `createItem`, `updateStock` | Auto-publishes the return value to `racer:inventory:stock` without any `publishAsync()` call |
 | `@RacerRoute` + `@RacerRouteRule` | `InventoryEventRouter` | Declaratively fans out events using `RouteAction` (FORWARD/FORWARD_AND_PROCESS/DROP/DROP_TO_DLQ) and `RouteMatchSource` (PAYLOAD/SENDER/ID) |
-| `@RacerListener(channel="racer:inventory:audit")` | `InventoryAuditConsumer` | Subscribes the method to the audit channel; handles deserialization, metrics, and DLQ automatically |
+| `@RacerListener(channelRef="audit")` | `InventoryAuditConsumer` | Subscribes the method via the configured channel alias; handles deserialization, metrics, and DLQ automatically |
 
 ---
 
@@ -831,8 +835,8 @@ This part builds `inventory-consumer`, a standalone Spring Boot application that
 
 - Subscribes to `racer:inventory:stock` for stock change events using `@RacerListener`
 - Subscribes to `racer:inventory:alerts` for low-stock alerts using `@RacerListener`
-- Subscribes durably to `racer:inventory:stock` as a Redis Stream consumer group (no
-  missed messages even after restarts) using `@RacerStreamListener`
+- Can switch the `stock` listener from fire-and-forget Pub/Sub to durable,
+    consumer-group-backed delivery by changing channel configuration only
 
 Both apps share the **same Redis instance** but are otherwise fully independent — no
 shared libraries, no direct HTTP calls, no service-discovery coupling.
@@ -855,8 +859,7 @@ inventory-consumer/
         │       │   └── InventoryItem.java
         │       └── listener/
         │           ├── StockEventListener.java
-        │           ├── AlertEventListener.java
-        │           └── StockStreamListener.java   ← durable (optional)
+        │           └── AlertEventListener.java
         └── resources/
             └── application.properties
 ```
@@ -977,13 +980,22 @@ racer.channels.stock.name=racer:inventory:stock
 racer.channels.alerts.name=racer:inventory:alerts
 racer.channels.audit.name=racer:inventory:audit
 
+# Optional durable mode for the stock listener.
+# Enable the same setting in inventory-service when you want stock events persisted
+# to a Redis Stream instead of transient Pub/Sub delivery.
+# racer.channels.stock.durable=true
+# racer.channels.stock.durable-group=inventory-consumer-group
+# racer.channels.stock.stream-key=racer:inventory:stock:stream
+
 # ── Actuator ─────────────────────────────────────────────────────────────────
 management.endpoints.web.exposure.include=health,info,metrics
 management.endpoint.health.show-details=always
 ```
 
-> **Tip:** Only `racer.channels.<alias>.name` is required in a consumer. The `async`,
-> `sender`, and `durable` properties are only meaningful on the publisher side.
+> **Tip:** Only `racer.channels.<alias>.name` is required in a consumer for plain
+> Pub/Sub. If you want `@RacerListener(channelRef = "...")` to consume durably, the
+> consumer also uses `durable`, `durable-group`, and `stream-key` from the same alias.
+> `async` and `sender` remain publisher-side concerns.
 
 ---
 
@@ -1069,14 +1081,14 @@ public class StockEventListener {
     }
 
     /**
-     * Subscribes to racer:inventory:stock via Redis Pub/Sub.
+     * Subscribes via the configured 'stock' alias.
      * Every STOCK_UPDATED and ITEM_CREATED event published by inventory-service
      * is delivered here in real time.
      *
      * RacerListenerRegistrar handles: subscription, deserialization,
      * DLQ forwarding on exception, and Micrometer metrics.
      */
-    @RacerListener(channel = "racer:inventory:stock", id = "stock-listener")
+    @RacerListener(channelRef = "stock", id = "stock-listener")
     public void onStockEvent(RacerMessage message) {
         InventoryItem item = objectMapper.convertValue(message.getPayload(), InventoryItem.class);
         log.info("[STOCK] eventType={} sku={} qty={} correlationId={}",
@@ -1118,11 +1130,11 @@ public class AlertEventListener {
     }
 
     /**
-     * Subscribes to racer:inventory:alerts.
+     * Subscribes via the configured 'alerts' alias.
      * LOW_STOCK_ALERT events trigger this handler whenever inventory-service
      * detects a quantity below the alert threshold.
      */
-    @RacerListener(channel = "racer:inventory:alerts", id = "alert-listener")
+    @RacerListener(channelRef = "alerts", id = "alert-listener")
     public void onAlertEvent(RacerMessage message) {
         InventoryItem alert = objectMapper.convertValue(message.getPayload(), InventoryItem.class);
         log.warn("[ALERT] LOW STOCK — sku={} qty={} location={}",
@@ -1138,76 +1150,49 @@ public class AlertEventListener {
 
 ---
 
-### Step 8.8 — Durable stream listener (optional)
+### Step 8.8 — Durable `@RacerListener` (optional)
 
-Pub/Sub (`@RacerListener`) is fire-and-forget: if `inventory-consumer` is **offline**
-when an event is published, that event is **lost**. Redis Streams solve this with
-durable, consumer-group-based delivery — messages are replayed on reconnect.
+By default, `@RacerListener` uses Redis Pub/Sub: if `inventory-consumer` is offline
+when an event is published, that event is lost. You can now make the same listener
+durable by configuration, with no new annotation and no second listener class.
 
-**Enable durable publishing in `inventory-service`** by adding one property:
+**Enable durable publishing in `inventory-service`:**
 
 ```properties
 # inventory-service/src/main/resources/application.properties
-racer.channels.stock.durable=true    # ← add this line, then restart inventory-service
+racer.channels.stock.durable=true
+racer.channels.stock.durable-group=inventory-consumer-group   # optional
+racer.channels.stock.stream-key=racer:inventory:stock:stream  # optional
 ```
 
-**Add the stream listener in `inventory-consumer`:**
+**Enable durable consumption in `inventory-consumer`:**
+
+```properties
+# inventory-consumer/src/main/resources/application.properties
+racer.channels.stock.durable=true
+racer.channels.stock.durable-group=inventory-consumer-group   # should match the producer-side intent
+racer.channels.stock.stream-key=racer:inventory:stock:stream  # optional; defaults to channel name + :stream
+```
+
+Once both apps are restarted, the existing `StockEventListener` continues to work
+unchanged:
 
 ```java
-// src/main/java/com/example/consumer/listener/StockStreamListener.java
-package com.example.consumer.listener;
-
-import com.cheetah.racer.annotation.RacerStreamListener;
-import com.cheetah.racer.model.RacerMessage;
-import com.example.consumer.model.InventoryItem;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Component;
-
-@Component
-public class StockStreamListener {
-
-    private static final Logger log = LoggerFactory.getLogger(StockStreamListener.class);
-
-    private final ObjectMapper objectMapper;
-
-    public StockStreamListener(ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper;
-    }
-
-    /**
-     * Durable stream consumer backed by a Redis Stream consumer group.
-     *
-     * stream   — Redis Stream key (must match racer.channels.stock.name in producer)
-     * group    — consumer group name (auto-created by Racer on first connect)
-     * consumer — unique consumer name within the group
-     *
-     * Messages are acknowledged (XACK) automatically on successful return.
-     * Exceptions route the message to the DLQ; the message is not re-queued
-     * unless you configure an explicit retry policy.
-     */
-    @RacerStreamListener(
-        stream   = "racer:inventory:stock",
-        group    = "inventory-consumer-group",
-        consumer = "consumer-1"
-    )
-    public void onStockStream(RacerMessage message) {
-        InventoryItem item = objectMapper.convertValue(message.getPayload(), InventoryItem.class);
-        log.info("[STREAM] durable delivery — eventType={} sku={} qty={}",
-                item.getEventType(), item.getSku(), item.getQuantity());
-    }
+@RacerListener(channelRef = "stock", id = "stock-listener")
+public void onStockEvent(RacerMessage message) {
+    // same handler, now backed by XREADGROUP instead of Pub/Sub
 }
 ```
 
-> **When to use `@RacerStreamListener` vs `@RacerListener`?**
+> **What changes at runtime?**
 >
-> |  | `@RacerListener` (Pub/Sub) | `@RacerStreamListener` (Streams) |
+> |  | `@RacerListener` with `durable=false` | `@RacerListener` with `durable=true` |
 > |---|---|---|
+> | Transport | Redis Pub/Sub (`PUBLISH`) | Redis Streams (`XADD`) |
+> | Consumer side | `receive(ChannelTopic)` | `XREADGROUP` + consumer group |
 > | Messages missed while offline | **Lost** | **Replayed on reconnect** |
-> | Multiple consumers share load | No — each subscriber receives all messages | Yes — consumer group distributes messages |
-> | Message ordering guaranteed | No | Yes, per shard |
-> | Producer-side setup required | None | Add `durable=true` to channel config |
+> | Extra listener class required | No | No |
+> | Producer-side setup required | None | Set `racer.channels.<alias>.durable=true` |
 
 ---
 
@@ -1309,11 +1294,13 @@ POST /api/inventory
                                              ─────────────────────────  │
                                              StockEventListener  ◀──────┤ (Pub/Sub)
                                              AlertEventListener  ◀──────┘ (Pub/Sub)
-                                             StockStreamListener ◀────── (Streams, durable)
+                                             
+if `racer.channels.stock.durable=true` on both sides:
+                                             StockEventListener  ◀────── (Streams via same @RacerListener)
 ```
 
 > **Key takeaway:** `inventory-consumer` requires only the `racer` dependency and
-> `@RacerListener` / `@RacerStreamListener` to subscribe to any channel.
+> `@RacerListener` to subscribe to any channel.
 > There is no shared library, no code coupling, and no service-discovery — only a shared
 > Redis instance and agreed-upon channel names.
 
@@ -1325,6 +1312,6 @@ POST /api/inventory
 |---|---|---|
 | No messages received by consumer | Producer and consumer targeting different Redis or channel name | Verify `spring.data.redis.*` and `racer.channels.<alias>.name` match exactly in both apps |
 | `@RacerListener` method never called | Bean not picked up by Spring | Ensure class has `@Component` / `@Service` and is within the component-scan root |
-| Stream listener never triggers | `durable=true` not set on producer channel | Add `racer.channels.stock.durable=true` to `inventory-service` properties and restart |
-| Same message processed twice | Two consumer instances share the same `consumer` name in one group | Give each instance a unique `consumer` name (e.g. append `${random.uuid}`) |
+| Durable stock listener never catches up after downtime | `durable=true` missing on producer or consumer alias | Set `racer.channels.stock.durable=true` in both apps and restart them |
+| Durable stock listener reads the wrong stream | Custom `stream-key` differs between producer and consumer | Use the same `racer.channels.stock.stream-key` value in both apps, or leave it blank on both sides |
 | Exception in listener — message lost | DLQ not configured | Add `racer.dlq.*` config or handle errors inside the listener and return normally |
