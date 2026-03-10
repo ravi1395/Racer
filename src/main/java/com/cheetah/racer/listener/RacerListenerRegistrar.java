@@ -23,6 +23,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.aop.framework.AopProxyUtils;
 import org.springframework.beans.BeansException;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.data.redis.connection.ReactiveSubscription;
 import org.springframework.data.redis.connection.stream.Consumer;
 import org.springframework.data.redis.connection.stream.ReadOffset;
@@ -113,11 +114,15 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
 
     /** Injected when {@code racer.dedup.enabled=true}. */
     @Nullable
-    private RacerDedupService dedupService;
+    private volatile RacerDedupService dedupService;
+    @Nullable
+    private ObjectProvider<RacerDedupService> dedupServiceProvider;
 
     /** Injected when {@code racer.circuit-breaker.enabled=true}. */
     @Nullable
-    private RacerCircuitBreakerRegistry circuitBreakerRegistry;
+    private volatile RacerCircuitBreakerRegistry circuitBreakerRegistry;
+    @Nullable
+    private ObjectProvider<RacerCircuitBreakerRegistry> circuitBreakerRegistryProvider;
 
     /** Set by {@link com.cheetah.racer.backpressure.RacerBackPressureMonitor}. */
     private final java.util.concurrent.atomic.AtomicBoolean backPressureActive = new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -132,8 +137,30 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
         this.dedupService = dedupService;
     }
 
+    public void setDedupServiceProvider(ObjectProvider<RacerDedupService> provider) {
+        this.dedupServiceProvider = provider;
+    }
+
+    private RacerDedupService getDedupService() {
+        if (dedupService == null && dedupServiceProvider != null) {
+            dedupService = dedupServiceProvider.getIfAvailable();
+        }
+        return dedupService;
+    }
+
     public void setCircuitBreakerRegistry(RacerCircuitBreakerRegistry circuitBreakerRegistry) {
         this.circuitBreakerRegistry = circuitBreakerRegistry;
+    }
+
+    public void setCircuitBreakerRegistryProvider(ObjectProvider<RacerCircuitBreakerRegistry> provider) {
+        this.circuitBreakerRegistryProvider = provider;
+    }
+
+    private RacerCircuitBreakerRegistry getCircuitBreakerRegistry() {
+        if (circuitBreakerRegistry == null && circuitBreakerRegistryProvider != null) {
+            circuitBreakerRegistry = circuitBreakerRegistryProvider.getIfAvailable();
+        }
+        return circuitBreakerRegistry;
     }
 
     /**
@@ -430,8 +457,8 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
             }
 
             // 0b. Circuit breaker gate
-            RacerCircuitBreaker cb = circuitBreakerRegistry != null
-                    ? circuitBreakerRegistry.getOrCreate(listenerId) : null;
+            RacerCircuitBreaker cb = getCircuitBreakerRegistry() != null
+                    ? getCircuitBreakerRegistry().getOrCreate(listenerId) : null;
             if (cb != null && !cb.isCallPermitted()) {
                 log.debug("[RACER-LISTENER] '{}' circuit {} — skipping message",
                         listenerId, cb.getState());
@@ -450,8 +477,8 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
             log.debug("[RACER-LISTENER] '{}' received message id={}", listenerId, message.getId());
 
             // 1. Deduplication check
-            if (dedupEnabled && dedupService != null) {
-                return dedupService.checkAndMarkProcessed(message.getId(), listenerId)
+            if (dedupEnabled && getDedupService() != null) {
+                return getDedupService().checkAndMarkProcessed(message.getId(), listenerId)
                         .flatMap(shouldProcess -> {
                             if (!shouldProcess) {
                                 log.debug("[RACER-LISTENER] '{}' duplicate id={} — skipped",

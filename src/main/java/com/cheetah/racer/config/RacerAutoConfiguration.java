@@ -30,10 +30,12 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.EnableAspectJAutoProxy;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
@@ -200,7 +202,7 @@ public class RacerAutoConfiguration {
 
     @Bean
     public RacerPollRegistrar racerPollRegistrar(
-            RacerPublisherRegistry racerPublisherRegistry,
+            @Lazy RacerPublisherRegistry racerPublisherRegistry,
             ObjectMapper objectMapper,
             Optional<RacerMetrics> racerMetrics) {
         return new RacerPollRegistrar(racerPublisherRegistry, objectMapper, racerMetrics.orElse(null));
@@ -270,9 +272,9 @@ public class RacerAutoConfiguration {
             Optional<RacerMetrics> racerMetrics,
             Optional<RacerSchemaRegistry> racerSchemaRegistry,
             Optional<RacerRouterService> racerRouterService,
-            Optional<RacerDeadLetterHandler> deadLetterHandler,
-            Optional<RacerDedupService> racerDedupService,
-            Optional<RacerCircuitBreakerRegistry> racerCircuitBreakerRegistry,
+            ObjectProvider<RacerDeadLetterHandler> deadLetterHandler,
+            ObjectProvider<RacerDedupService> racerDedupService,
+            ObjectProvider<RacerCircuitBreakerRegistry> racerCircuitBreakerRegistry,
             ApplicationContext applicationContext) {
         RacerListenerRegistrar registrar = new RacerListenerRegistrar(
                 listenerContainer,
@@ -283,9 +285,10 @@ public class RacerAutoConfiguration {
                 racerMetrics.orElse(null),
                 racerSchemaRegistry.orElse(null),
                 racerRouterService.orElse(null),
-                deadLetterHandler.orElse(null));
-        racerDedupService.ifPresent(registrar::setDedupService);
-        racerCircuitBreakerRegistry.ifPresent(registrar::setCircuitBreakerRegistry);
+                null);
+        registrar.setDeadLetterHandlerProvider(deadLetterHandler);
+        registrar.setDedupServiceProvider(racerDedupService);
+        registrar.setCircuitBreakerRegistryProvider(racerCircuitBreakerRegistry);
         List<RacerMessageInterceptor> interceptors = new ArrayList<>(
                 applicationContext.getBeansOfType(RacerMessageInterceptor.class).values());
         AnnotationAwareOrderComparator.sort(interceptors);
@@ -342,18 +345,19 @@ public class RacerAutoConfiguration {
             ObjectMapper objectMapper,
             Optional<RacerMetrics> racerMetrics,
             Optional<RacerSchemaRegistry> racerSchemaRegistry,
-            Optional<RacerDeadLetterHandler> deadLetterHandler,
-            Optional<RacerDedupService> racerDedupService,
-            Optional<RacerCircuitBreakerRegistry> racerCircuitBreakerRegistry) {
+            ObjectProvider<RacerDeadLetterHandler> deadLetterHandler,
+            ObjectProvider<RacerDedupService> racerDedupService,
+            ObjectProvider<RacerCircuitBreakerRegistry> racerCircuitBreakerRegistry) {
         RacerStreamListenerRegistrar registrar = new RacerStreamListenerRegistrar(
                 reactiveStringRedisTemplate,
                 objectMapper,
                 racerProperties,
                 racerMetrics.orElse(null),
                 racerSchemaRegistry.orElse(null),
-                deadLetterHandler.orElse(null));
-        racerDedupService.ifPresent(registrar::setDedupService);
-        racerCircuitBreakerRegistry.ifPresent(registrar::setCircuitBreakerRegistry);
+                null);
+        registrar.setDeadLetterHandlerProvider(deadLetterHandler);
+        registrar.setDedupServiceProvider(racerDedupService);
+        registrar.setCircuitBreakerRegistryProvider(racerCircuitBreakerRegistry);
         return registrar;
     }
 

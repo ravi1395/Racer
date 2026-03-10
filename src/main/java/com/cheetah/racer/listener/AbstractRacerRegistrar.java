@@ -4,6 +4,7 @@ import com.cheetah.racer.config.RacerProperties;
 import com.cheetah.racer.model.RacerMessage;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeansException;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.context.EnvironmentAware;
 import org.springframework.context.SmartLifecycle;
@@ -42,7 +43,8 @@ public abstract class AbstractRacerRegistrar
         implements BeanPostProcessor, EnvironmentAware, SmartLifecycle {
 
     protected final RacerProperties                    racerProperties;
-    @Nullable protected final RacerDeadLetterHandler   deadLetterHandler;
+    @Nullable protected volatile RacerDeadLetterHandler deadLetterHandler;
+    @Nullable private ObjectProvider<RacerDeadLetterHandler> deadLetterHandlerProvider;
 
     protected Environment environment;
 
@@ -61,6 +63,28 @@ public abstract class AbstractRacerRegistrar
                                       @Nullable RacerDeadLetterHandler deadLetterHandler) {
         this.racerProperties   = racerProperties;
         this.deadLetterHandler = deadLetterHandler;
+    }
+
+    /**
+     * Wires a lazy {@link ObjectProvider} for the dead-letter handler so that the
+     * actual {@link RacerDeadLetterHandler} bean (and its transitive dependencies) are
+     * not created during the {@link org.springframework.beans.factory.config.BeanPostProcessor}
+     * registration phase, avoiding the {@code BeanPostProcessorChecker} warning.
+     */
+    public void setDeadLetterHandlerProvider(ObjectProvider<RacerDeadLetterHandler> provider) {
+        this.deadLetterHandlerProvider = provider;
+    }
+
+    /**
+     * Returns the {@link RacerDeadLetterHandler}, resolving it lazily from the
+     * {@link ObjectProvider} on first access if necessary.
+     */
+    @Nullable
+    protected RacerDeadLetterHandler getDeadLetterHandler() {
+        if (deadLetterHandler == null && deadLetterHandlerProvider != null) {
+            deadLetterHandler = deadLetterHandlerProvider.getIfAvailable();
+        }
+        return deadLetterHandler;
     }
 
     // ── Template methods ──────────────────────────────────────────────────────
@@ -182,8 +206,9 @@ public abstract class AbstractRacerRegistrar
      * If none is present, logs a WARN and returns an empty {@code Mono}.
      */
     protected Mono<?> enqueueDeadLetter(RacerMessage message, Throwable error) {
-        if (deadLetterHandler != null) {
-            return deadLetterHandler.enqueue(message, error)
+        RacerDeadLetterHandler handler = getDeadLetterHandler();
+        if (handler != null) {
+            return handler.enqueue(message, error)
                     .onErrorResume(dlqEx -> {
                         log.error("[{}] DLQ enqueue failed for id={}: {}",
                                 logPrefix(), message.getId(), dlqEx.getMessage());
