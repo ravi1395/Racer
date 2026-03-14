@@ -22,19 +22,36 @@ public final class RacerStreamUtils {
     /**
      * Creates a consumer group on {@code streamKey} starting from offset {@code 0},
      * silently ignoring the {@code BUSYGROUP} error when the group already exists.
+     *
+     * <p>The BUSYGROUP check traverses the full exception cause chain because
+     * Spring Data Redis / Lettuce may wrap the Redis error in a
+     * {@code DataAccessException} or similar wrapper whose top-level message does not
+     * directly contain "BUSYGROUP", while the root cause does.
      */
     public static Mono<Void> ensureGroup(ReactiveRedisTemplate<String, String> redisTemplate,
                                           String streamKey, String group) {
         return redisTemplate.opsForStream()
                 .createGroup(streamKey, ReadOffset.from("0"), group)
                 .onErrorResume(ex -> {
-                    if (ex.getMessage() != null && ex.getMessage().contains("BUSYGROUP")) {
-                        log.debug("[RACER-STREAM] Group '{}' already exists on '{}'", group, streamKey);
+                    if (isBusyGroup(ex)) {
+                        log.debug("[RACER-STREAM] Group '{}' already exists on '{}', joining existing group",
+                                group, streamKey);
                         return Mono.empty();
                     }
                     return Mono.error(ex);
                 })
                 .then();
+    }
+
+    /**
+     * Returns {@code true} if any exception in the cause chain carries the Redis
+     * {@code BUSYGROUP} message, regardless of how many wrapper exceptions
+     * Spring Data Redis or Lettuce add around it.
+     */
+    private static boolean isBusyGroup(Throwable ex) {
+        if (ex == null) return false;
+        if (ex.getMessage() != null && ex.getMessage().contains("BUSYGROUP")) return true;
+        return isBusyGroup(ex.getCause());
     }
 
     /**

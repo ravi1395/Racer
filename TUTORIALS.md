@@ -1044,8 +1044,33 @@ public class InventoryService {
 ```
 
 > **Self-invocation warning:** Calling an `@PublishResult` method from within the **same class**
-> bypasses the Spring AOP proxy — the annotation will not fire. Call it from another bean,
-> or inject `ApplicationContext` and look up `self` to force proxy invocation.
+> bypasses the Spring AOP proxy — the annotation will not fire.
+>
+> ```java
+> // ❌ BROKEN — 'this' is the raw object, not the proxy; @PublishResult is ignored
+> public Mono<MyEvent> handle(Request req) {
+>     return this.process(req);   // self-invocation skips the AOP aspect
+> }
+>
+> @PublishResult(channelRef = "events")
+> public Mono<MyEvent> process(Request req) { ... }
+> ```
+>
+> **Preferred fix — use `@RacerPublisher` direct injection:**
+> ```java
+> @RacerPublisher("events")
+> private RacerChannelPublisher eventsPublisher;  // wired by Racer at startup
+>
+> // ✅ WORKS — publishAsync() is a plain API call, no proxy needed
+> public Mono<MyEvent> handle(Request req) {
+>     return buildEvent(req)
+>         .flatMap(event -> eventsPublisher.publishAsync(event).thenReturn(event));
+> }
+> ```
+>
+> `@PublishResult` **is** safe when the annotated method is called from a **different bean**
+> (e.g. a controller calling a service method directly). Reserve it for those cases.
+> For internal routing within the same class, always prefer `@RacerPublisher` injection.
 
 ---
 

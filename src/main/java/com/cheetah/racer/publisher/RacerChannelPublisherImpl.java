@@ -5,6 +5,7 @@ import com.cheetah.racer.metrics.RacerMetricsPort;
 import com.cheetah.racer.schema.RacerSchemaRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.connection.RedisStreamCommands;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.lang.Nullable;
@@ -46,6 +47,12 @@ public class RacerChannelPublisherImpl implements RacerChannelPublisher {
     /** Redis Stream key used when {@link #durable} is {@code true}. */
     private final String durableStreamKey;
 
+    /**
+     * XADD MAXLEN cap applied when {@link #durable} is {@code true}.
+     * Prevents unbounded stream growth. 0 means no cap (not recommended).
+     */
+    private final long streamMaxLen;
+
     public RacerChannelPublisherImpl(ReactiveRedisTemplate<String, String> redisTemplate,
                                      ObjectMapper objectMapper,
                                      String channelName,
@@ -62,7 +69,7 @@ public class RacerChannelPublisherImpl implements RacerChannelPublisher {
                                      @Nullable RacerMetricsPort racerMetrics,
                                      @Nullable RacerSchemaRegistry schemaRegistry) {
         this(redisTemplate, objectMapper, channelName, channelAlias, defaultSender,
-                false, "", racerMetrics, schemaRegistry);
+                false, "", 0L, racerMetrics, schemaRegistry);
     }
 
     /** Full constructor with explicit durable-stream configuration. */
@@ -73,6 +80,7 @@ public class RacerChannelPublisherImpl implements RacerChannelPublisher {
                                      String defaultSender,
                                      boolean durable,
                                      String durableStreamKey,
+                                     long streamMaxLen,
                                      @Nullable RacerMetricsPort racerMetrics,
                                      @Nullable RacerSchemaRegistry schemaRegistry) {
         this.redisTemplate    = redisTemplate;
@@ -82,6 +90,7 @@ public class RacerChannelPublisherImpl implements RacerChannelPublisher {
         this.defaultSender    = defaultSender;
         this.durable          = durable;
         this.durableStreamKey = durableStreamKey;
+        this.streamMaxLen     = streamMaxLen;
         this.racerMetrics     = racerMetrics != null ? racerMetrics : new NoOpRacerMetrics();
         this.schemaRegistry   = schemaRegistry;
     }
@@ -100,8 +109,13 @@ public class RacerChannelPublisherImpl implements RacerChannelPublisher {
                 .then(MessageEnvelopeBuilder.build(objectMapper, channelName, sender, payload))
                 .flatMap(json -> {
                     if (durable) {
+                        MapRecord<String, String, String> record =
+                                MapRecord.create(durableStreamKey, Map.of("data", json));
+                        RedisStreamCommands.XAddOptions opts = streamMaxLen > 0
+                                ? RedisStreamCommands.XAddOptions.maxlen(streamMaxLen).approximateTrimming(true)
+                                : RedisStreamCommands.XAddOptions.none();
                         return redisTemplate.opsForStream()
-                                .add(MapRecord.create(durableStreamKey, Map.of("data", json)))
+                                .add(record, opts)
                                 .map(id -> 1L);
                     }
                     return redisTemplate.convertAndSend(channelName, json);

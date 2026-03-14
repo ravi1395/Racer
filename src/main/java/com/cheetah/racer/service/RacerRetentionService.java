@@ -1,6 +1,7 @@
 package com.cheetah.racer.service;
 
 import com.cheetah.racer.RedisChannels;
+import com.cheetah.racer.config.RacerProperties;
 import com.cheetah.racer.model.DeadLetterMessage;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -10,6 +11,7 @@ import reactor.core.publisher.Mono;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
@@ -48,6 +50,7 @@ public class RacerRetentionService {
     private final ObjectMapper objectMapper;
     private final long streamMaxLen;
     private final long dlqMaxAgeHours;
+    private final RacerProperties racerProperties;
 
     private final AtomicLong totalStreamTrimmed = new AtomicLong(0);
     private final AtomicLong totalDlqPruned     = new AtomicLong(0);
@@ -57,12 +60,14 @@ public class RacerRetentionService {
             DeadLetterQueueService dlqService,
             ObjectMapper objectMapper,
             long streamMaxLen,
-            long dlqMaxAgeHours) {
-        this.redisTemplate  = redisTemplate;
-        this.dlqService     = dlqService;
-        this.objectMapper   = objectMapper;
-        this.streamMaxLen   = streamMaxLen;
-        this.dlqMaxAgeHours = dlqMaxAgeHours;
+            long dlqMaxAgeHours,
+            RacerProperties racerProperties) {
+        this.redisTemplate    = redisTemplate;
+        this.dlqService       = dlqService;
+        this.objectMapper     = objectMapper;
+        this.streamMaxLen     = streamMaxLen;
+        this.dlqMaxAgeHours   = dlqMaxAgeHours;
+        this.racerProperties  = racerProperties;
     }
 
     // ── Scheduled job (activated when racer.retention.enabled=true) ──────────
@@ -83,10 +88,21 @@ public class RacerRetentionService {
 
     /**
      * Trims all known Racer Redis Streams to at most {@code streamMaxLen} entries.
+     * Covers the built-in request stream plus every durable channel stream declared
+     * under {@code racer.channels.*}.
      * Can also be called on-demand from a controller.
      */
     public void trimStreams() {
-        List<String> streamKeys = List.of(RedisChannels.REQUEST_STREAM);
+        List<String> streamKeys = new ArrayList<>();
+        streamKeys.add(RedisChannels.REQUEST_STREAM);
+        racerProperties.getChannels().forEach((alias, ch) -> {
+            if (ch.isDurable() && ch.getName() != null && !ch.getName().isBlank()) {
+                String key = ch.getStreamKey().isBlank()
+                        ? ch.getName() + ":stream"
+                        : ch.getStreamKey();
+                streamKeys.add(key);
+            }
+        });
         for (String streamKey : streamKeys) {
             redisTemplate.opsForStream()
                     .trim(streamKey, streamMaxLen, true)

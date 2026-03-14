@@ -122,8 +122,10 @@ public class RacerAutoConfiguration {
     @Bean
     public RacerStreamPublisher racerStreamPublisher(
             ReactiveRedisTemplate<String, String> reactiveStringRedisTemplate,
-            ObjectMapper objectMapper) {
-        return new RacerStreamPublisher(reactiveStringRedisTemplate, objectMapper);
+            ObjectMapper objectMapper,
+            RacerProperties racerProperties) {
+        return new RacerStreamPublisher(reactiveStringRedisTemplate, objectMapper,
+                racerProperties.getRetention().getStreamMaxLen());
     }
 
     // ── Content-based router ─────────────────────────────────────────────────
@@ -333,7 +335,8 @@ public class RacerAutoConfiguration {
                 deadLetterQueueService,
                 objectMapper,
                 racerProperties.getRetention().getStreamMaxLen(),
-                racerProperties.getRetention().getDlqMaxAgeHours());
+                racerProperties.getRetention().getDlqMaxAgeHours(),
+                racerProperties);
     }
 
     // ── @RacerStreamListener registrar ──────────────────────────────────────

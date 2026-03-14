@@ -246,8 +246,26 @@ spring.data.redis.port=6379
 racer.default-channel=racer:notify:default
 
 # ── Racer: named channel aliases ─────────────────────────────────────────────
+#
+# Two independent properties control channel behaviour — they are NOT related:
+#
+#   async  (default: true)  — controls the PUBLISH call semantics only:
+#     true  = fire-and-forget (non-blocking); publishAsync() returns as soon as the
+#             message is handed to Redis. Transport stays Redis Pub/Sub.
+#     false = synchronous; publishAsync() waits until Redis confirms the message was
+#             received by at least one subscriber.
+#
+#   durable (default: false) — controls the TRANSPORT for the channel:
+#     false = Redis Pub/Sub (PUBLISH); messages are lost if no subscriber is online.
+#     true  = Redis Streams (XADD/XREADGROUP); messages survive offline consumers
+#             and are replayed when the consumer reconnects.
+#             ⚠ IMPORTANT: when durable=true, workers MUST use @RacerStreamListener
+#             (not @RacerListener). @RacerListener listens on Pub/Sub and will never
+#             see messages written to a stream. Not switching the annotation silently
+#             drops all messages (the publisher writes to the stream; the listener
+#             subscribes to a Pub/Sub channel that is never written to).
 
-# email — async, idempotent delivery (EmailWorker uses dedup=true)
+# email — fire-and-forget publish (async=true); idempotent delivery (EmailWorker uses dedup=true)
 racer.channels.email.name=racer:notify:email
 racer.channels.email.async=true
 racer.channels.email.sender=notify-hub
@@ -411,10 +429,24 @@ approach in each situation.
 | Pattern | How it works | Best for |
 |---|---|---|
 | `@RacerPublisher` | Field injection — Racer wires a `RacerChannelPublisher` into the field at startup | Full control over **when** and **what** to publish |
-| `@PublishResult` | AOP interceptor — taps the reactive pipeline returned by a method and publishes each emitted value automatically | Service methods whose **return value is the event** |
+| `@PublishResult` | AOP interceptor — taps the reactive pipeline returned by a method and publishes each emitted value automatically | Service methods called **from another bean** (controller → service). Does **not** fire on self-invocation (`this.method()`) |
 | `RacerTransaction` | Spring bean — chain multiple `tx.publish(alias, payload)` calls into one reactive sequence | Publishing to **multiple channels** in one business action |
 
 ### Step 4.1 — `NotificationService`
+
+> **Why `@RacerPublisher` injection, not `@PublishResult`, inside `send()`**
+>
+> `@PublishResult` is a Spring AOP annotation. It only fires when a method is called
+> **through the Spring proxy** — i.e. when an external bean calls into this one. When
+> `send()` calls `this.dispatchEmail()` it bypasses the proxy entirely (Java `this`
+> is the raw object, not the proxy), so the annotation is silently ignored and nothing
+> reaches Redis.
+>
+> The fix is to inject `RacerChannelPublisher` beans directly with `@RacerPublisher`
+> and call `publishAsync()` — a plain API call that needs no proxy.
+>
+> `@PublishResult` **is** safe on the two methods a controller calls directly
+> (`sendUrgentPush`) and on any method invoked from a different bean.
 
 ```java
 // src/main/java/com/example/notify/service/NotificationService.java
@@ -437,9 +469,22 @@ public class NotificationService {
 
     // ── Pattern 1: @RacerPublisher field injection ────────────────────────────
     //
-    // RacerPublisherFieldProcessor (a BeanPostProcessor) replaces this null at
-    // startup with a RacerChannelPublisher pre-configured for the "audit" alias.
+    // RacerPublisherFieldProcessor (a BeanPostProcessor) replaces these nulls at
+    // startup with RacerChannelPublisher instances pre-configured for each alias.
     // No @Autowired, no constructor argument — Racer handles it.
+    //
+    // These publishers are used directly inside send() because send() calls its
+    // own dispatch helpers via 'this', which bypasses the Spring AOP proxy and
+    // silences any @PublishResult annotation on those helpers.
+    @RacerPublisher("email")
+    private RacerChannelPublisher emailPublisher;
+
+    @RacerPublisher("sms")
+    private RacerChannelPublisher smsPublisher;
+
+    @RacerPublisher("push")
+    private RacerChannelPublisher pushPublisher;
+
     @RacerPublisher("audit")
     private RacerChannelPublisher auditPublisher;
 
@@ -450,12 +495,14 @@ public class NotificationService {
         this.racerTransaction = racerTransaction;
     }
 
-    // ── Pattern 2: @PublishResult ─────────────────────────────────────────────
+    // ── Pattern 2: @PublishResult (safe for external callers) ─────────────────
     //
-    // The @PublishResult AOP aspect intercepts these methods, taps the returned
-    // Mono pipeline, and publishes each emitted NotificationResult to the
-    // configured channel alias BEFORE forwarding the value to the caller.
-    // No explicit publishAsync() call is required.
+    // These methods are annotated with @PublishResult so that any bean that calls
+    // them DIRECTLY (e.g. a controller, another service) gets automatic publishing
+    // as a side-effect without any extra code.
+    //
+    // They are NOT called from send() via 'this' — that would bypass the proxy.
+    // send() publishes imperatively with publishAsync() instead (see below).
 
     @PublishResult(channelRef = "email")
     public Mono<NotificationResult> dispatchEmail(NotificationCommand cmd) {
@@ -474,6 +521,7 @@ public class NotificationService {
 
     // ── Pattern 2 + @RacerPriority ────────────────────────────────────────────
     //
+    // Called directly from the controller, so @PublishResult fires correctly.
     // @RacerPriority reads the "priority" field from the returned result and routes
     // to: racer:notify:push:priority:HIGH   (or NORMAL / LOW)
     // Falls back to defaultLevel="HIGH" when the priority field is blank.
@@ -513,23 +561,29 @@ public class NotificationService {
     }
 
     // ── Entry point ───────────────────────────────────────────────────────────
+    //
+    // Uses publishAsync() directly (Pattern 1) because calling this.dispatchEmail()
+    // etc. would be a self-invocation and would silently skip @PublishResult.
 
     public Mono<NotificationResult> send(NotificationCommand cmd) {
-        Mono<NotificationResult> dispatch = switch (cmd.getType().toUpperCase()) {
-            case "EMAIL"     -> dispatchEmail(cmd);
-            case "SMS"       -> dispatchSms(cmd);
-            case "PUSH"      -> dispatchPush(cmd);
-            case "BROADCAST" -> sendBroadcast(cmd).thenReturn(
-                    NotificationResult.builder()
-                            .id(cmd.getId()).type("BROADCAST").status("DISPATCHED")
-                            .recipient(cmd.getRecipient()).dispatchedAt(Instant.now()).build());
-            default -> Mono.error(
-                    new IllegalArgumentException("Unknown type: " + cmd.getType()));
-        };
-
-        // After dispatching, also publish to audit using the injected auditPublisher
-        return dispatch.flatMap(result ->
-                auditPublisher.publishAsync(result).thenReturn(result));
+        return buildResult(cmd, cmd.getType().toUpperCase())
+                .flatMap(result -> switch (cmd.getType().toUpperCase()) {
+                    case "EMAIL" ->
+                            emailPublisher.publishAsync(result).thenReturn(result);
+                    case "SMS" ->
+                            smsPublisher.publishAsync(result).thenReturn(result);
+                    case "PUSH" ->
+                            pushPublisher.publishAsync(result).thenReturn(result);
+                    case "BROADCAST" ->
+                            sendBroadcast(cmd).thenReturn(
+                                    NotificationResult.builder()
+                                            .id(cmd.getId()).type("BROADCAST").status("DISPATCHED")
+                                            .recipient(cmd.getRecipient()).dispatchedAt(Instant.now()).build());
+                    default -> Mono.error(
+                            new IllegalArgumentException("Unknown type: " + cmd.getType()));
+                })
+                // Also record every dispatch in the audit trail
+                .flatMap(result -> auditPublisher.publishAsync(result).thenReturn(result));
     }
 
     // ── Helper ────────────────────────────────────────────────────────────────
@@ -710,6 +764,25 @@ public class AuditInterceptor implements RacerMessageInterceptor {
 }
 ```
 
+> **Interceptors apply to `@RacerListener` (Pub/Sub) only.**
+> `RacerMessageInterceptor` beans are discovered and applied by `RacerListenerRegistrar`.
+> `RacerStreamListenerRegistrar` (used by `@RacerStreamListener`) has no interceptor
+> support — interceptors are silently skipped for stream workers.
+>
+> **Workaround for stream workers:** apply a Spring `@Aspect` on the listener method:
+>
+> ```java
+> @Aspect
+> @Component
+> public class StreamWorkerAspect {
+>     @Around("@annotation(com.cheetah.racer.annotation.RacerStreamListener)")
+>     public Object aroundStream(ProceedingJoinPoint pjp) throws Throwable {
+>         // pre-processing: validate, log, mutate, etc.
+>         return pjp.proceed();
+>     }
+> }
+> ```
+
 ---
 
 ## Part 7 — Consuming Messages
@@ -805,8 +878,14 @@ public class EmailWorker {
      */
     @RacerListener(channelRef = "email", id = "email-worker", dedup = true)
     public void onEmailNotification(RacerMessage message) {
-        NotificationResult result = objectMapper.convertValue(
-                message.getPayload(), NotificationResult.class);
+        // message.getPayload() is always a JSON String — use readValue, not convertValue
+        NotificationResult result;
+        try {
+            result = objectMapper.readValue(
+                    (String) message.getPayload(), NotificationResult.class);
+        } catch (Exception e) {
+            throw new RuntimeException("Invalid email payload", e);
+        }
         log.info("[EMAIL] Sending to {} | id={}", result.getRecipient(), result.getId());
         // Production: call SMTP / SES / SendGrid here
     }
@@ -854,8 +933,14 @@ public class PushWorker {
     @RacerListener(channelRef = "push", id = "push-worker",
                    mode = ConcurrencyMode.CONCURRENT, concurrency = 4)
     public Mono<Void> onPushNotification(RacerMessage message) {
-        NotificationResult result = objectMapper.convertValue(
-                message.getPayload(), NotificationResult.class);
+        // message.getPayload() is always a JSON String — use readValue, not convertValue
+        NotificationResult result;
+        try {
+            result = objectMapper.readValue(
+                    (String) message.getPayload(), NotificationResult.class);
+        } catch (Exception e) {
+            return Mono.error(new RuntimeException("Invalid push payload", e));
+        }
         log.info("[PUSH] Dispatching to {} | id={}", result.getRecipient(), result.getId());
         // Production: call FCM / APNs / Web Push API here
         return Mono.empty();
@@ -905,8 +990,14 @@ public class SmsWorker {
      */
     @RacerListener(channelRef = "sms", id = "sms-worker")
     public void onSmsNotification(RacerMessage message) {
-        NotificationResult result = objectMapper.convertValue(
-                message.getPayload(), NotificationResult.class);
+        // message.getPayload() is always a JSON String — use readValue, not convertValue
+        NotificationResult result;
+        try {
+            result = objectMapper.readValue(
+                    (String) message.getPayload(), NotificationResult.class);
+        } catch (Exception e) {
+            throw new RuntimeException("Invalid SMS payload", e);
+        }
 
         if ("FAILED".equalsIgnoreCase(result.getStatus())) {
             log.error("[SMS] Simulated gateway failure for id={}", result.getId());
@@ -1060,14 +1151,15 @@ public class DlqApiController {
 
     /**
      * Pops the oldest DLQ entry and re-publishes its payload to the original channel.
-     * DlqReprocessorService deserializes it and publishes back through the channel
-     * registry — triggering the full interceptor and listener chain again.
+     * DlqReprocessorService.republishOne() returns the number of Pub/Sub subscribers
+     * that received the message (0 when the DLQ is empty).
      */
     @PostMapping("/reprocess")
     public Mono<String> reprocess() {
-        return dlqReprocessor.reprocessNext()
-                .map(msg -> "Reprocessed: " + msg.getOriginalMessageId())
-                .defaultIfEmpty("DLQ is empty");
+        return dlqReprocessor.republishOne()
+                .map(count -> count > 0
+                        ? "Republished 1 message to its original channel"
+                        : "DLQ is empty");
     }
 }
 ```
@@ -1179,11 +1271,19 @@ Observe transitions in practice via Exercise 7 in Part 16.
 
 By default `@RacerListener` uses Redis Pub/Sub: messages published while the consumer
 is offline are permanently lost. Switch to durable delivery (Redis Streams + consumer
-groups) by editing `application.properties` — **no code change required**.
+groups) by editing `application.properties` **and** updating the consumer annotation.
 
-### Enable durable email
+> **Two things must change together:** the channel property (`durable=true`) controls
+> what the _publisher_ does (XADD instead of PUBLISH). The _consumer_ annotation must
+> also change from `@RacerListener` to `@RacerStreamListener`. These are distinct
+> registrars: `@RacerListener` subscribes to Redis Pub/Sub and will never receive
+> messages written to a stream. Enabling `durable=true` without changing the annotation
+> causes the publisher to write to the stream while the consumer reads from an empty
+> Pub/Sub channel — all messages are silently dropped.
 
-Uncomment in `application.properties`:
+### Step 13.1 — Enable durable email in `application.properties`
+
+Uncomment:
 
 ```properties
 racer.channels.email.durable=true
@@ -1191,21 +1291,59 @@ racer.channels.email.durable-group=email-consumer-group
 racer.channels.email.stream-key=racer:notify:email:stream
 ```
 
+### Step 13.2 — Switch `EmailWorker` to `@RacerStreamListener`
+
+Change the annotation from `@RacerListener` to `@RacerStreamListener`:
+
+```java
+// src/main/java/com/example/notify/worker/EmailWorker.java
+import com.cheetah.racer.annotation.RacerStreamListener;   // <-- new import
+// ...
+
+// Before (Pub/Sub — will not receive any messages when durable=true)
+// @RacerListener(channelRef = "email", id = "email-worker", dedup = true)
+
+// After (Redis Streams — polls via XREADGROUP, auto-ACKs on success)
+@RacerStreamListener(channelRef = "email", id = "email-stream-worker")
+public void onEmailNotification(RacerMessage message) {
+    NotificationResult result;
+    try {
+        result = objectMapper.readValue(
+                (String) message.getPayload(), NotificationResult.class);
+    } catch (Exception e) {
+        throw new RuntimeException("Invalid email payload", e);
+    }
+    log.info("[EMAIL] Sending to {} | id={}", result.getRecipient(), result.getId());
+    // Production: call SMTP / SES / SendGrid here
+}
+```
+
+> **Note — `dedup = true` is not supported on `@RacerStreamListener`.**
+> Redis Streams consumer groups already guarantee at-least-once delivery within the
+> group; combined with a unique stream entry ID, duplicate suppression can be
+> implemented with a Redis `SET NX EX` guard inside the listener body if needed.
+
 After restarting:
 
 - `@PublishResult(channelRef="email")` uses `XADD` instead of `PUBLISH`
-- `EmailWorker`'s `@RacerListener(channelRef="email")` polls via `XREADGROUP` + `XACK`
+- `EmailWorker`'s `@RacerStreamListener` polls via `XREADGROUP` + auto `XACK`
 - Messages published while `EmailWorker` was offline are replayed on reconnect
 
-`EmailWorker` code is **completely unchanged**.
+> **⚠ Do not manually create the consumer group** for a stream managed by racer.
+> `RacerStreamListenerRegistrar` issues `XGROUP CREATE … MKSTREAM` at startup and
+> silently ignores the `BUSYGROUP` error when the group already exists from a previous
+> run. If you pre-create the group with a different offset or a wrong group name,
+> racer's startup `ensureGroup` call will silently succeed (BUSYGROUP is swallowed) and
+> consumers may miss messages or replay from the wrong offset.
 
 | | `durable=false` (default) | `durable=true` |
 |---|---|---|
 | Transport | Redis Pub/Sub (`PUBLISH`) | Redis Streams (`XADD`) |
-| Consumer protocol | `receive(ChannelTopic)` | `XREADGROUP` + consumer group |
+| Consumer annotation | `@RacerListener` | **`@RacerStreamListener`** |
+| Consumer protocol | `subscribe(ChannelTopic)` | `XREADGROUP` + `XACK` |
 | Messages missed while offline | **Lost** | **Replayed** |
-| Code change required | — | None |
 | Properties to add | — | `durable`, `durable-group`, `stream-key` |
+| Annotation change required | — | **Yes — `@RacerStreamListener`** |
 
 ---
 
@@ -1710,12 +1848,17 @@ scope. A few advanced topics have dedicated tutorials:
 | `Connection refused` (Redis) | Redis not running | `docker compose -f /path/to/racer/compose.yaml up -d` |
 | `NoSuchBeanDefinitionException: RacerChannelPublisher` | `@EnableRacer` missing | Add `@EnableRacer` to `NotifyApplication` |
 | `@RacerPublisher` field is `null` at runtime | Bean not a Spring-managed proxy | Ensure class has `@Service` / `@Component` and comes from the application context |
-| `@PublishResult` does not publish | Self-invocation (same class calling itself) | Move the `@PublishResult` method to a separate `@Service` bean |
+| `@PublishResult` does not publish | Self-invocation — `send()` calling `this.dispatchEmail()` bypasses the Spring AOP proxy | Use `@RacerPublisher` field injection and call `publishAsync()` directly inside the routing method, as shown in `NotificationService.send()` |
 | `NoSuchBeanDefinitionException: NotificationStatusClient` | `@EnableRacerClients` missing | Add `@EnableRacerClients` to `NotifyApplication` |
 | Channel alias not found | Alias missing from `application.properties` | Add `racer.channels.<alias>.name=...` |
 | Deduplication not working | `racer.dedup.enabled=false` | Set `racer.dedup.enabled=true` |
 | Circuit breaker never opens | `racer.circuit-breaker.enabled=false` | Set `racer.circuit-breaker.enabled=true` |
 | DLQ always empty after listener exception | `DeadLetterQueueService` not wired | Ensure the `racer` starter is on the classpath |
-| Durable listener misses messages after restart | `durable=true` only on one side | Set `racer.channels.<alias>.durable=true` on both publisher and consumer |
+| Durable listener misses all messages | `durable=true` set in properties but consumer still uses `@RacerListener` | Switch the consumer annotation to `@RacerStreamListener` — `@RacerListener` reads from Pub/Sub only and will not receive stream messages |
+| Durable listener misses messages after restart | `durable=true` only on one side | Set `racer.channels.<alias>.durable=true` on both publisher and consumer sides |
+| `ClassCastException` or `JsonMappingException` deserializing `RacerMessage.payload` | `objectMapper.convertValue(message.getPayload(), ...)` called on a `String` | Use `objectMapper.readValue((String) message.getPayload(), YourType.class)` — `payload` is always a JSON String |
+| `NoSuchMethodError` / compile error on `dlqReprocessor.reprocessNext()` | Method does not exist | Use `dlqReprocessor.republishOne()` → `Mono<Long>` (subscriber count) or `dlqReprocessor.republishAll()` → `Mono<Long>` (total republished) |
+| Interceptors not running for `@RacerStreamListener` workers | `RacerMessageInterceptor` beans only apply to `@RacerListener` (Pub/Sub) | Use a Spring `@Aspect` on `@RacerStreamListener` methods for equivalent pre-processing |
+| `async=true` set but messages still lost when listener is offline | `async` controls publish blocking, not transport; Pub/Sub is still used | Set `durable=true` (and switch to `@RacerStreamListener`) to use Redis Streams |
 | Request-reply times out immediately | `@RacerResponder` not started or wrong alias | Verify `@RacerResponder(channelRef="requests")` and matching alias on both sides |
 | HTTP 400/500 on `POST /notifications` | Unrecognised `type` value | Use `EMAIL`, `SMS`, `PUSH`, or `BROADCAST` (case-insensitive) |

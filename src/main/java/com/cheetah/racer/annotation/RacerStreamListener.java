@@ -98,9 +98,14 @@ public @interface RacerStreamListener {
 
     /**
      * Maximum number of stream entries to read per poll ({@code COUNT} parameter of
-     * {@code XREADGROUP}). Defaults to {@code 10}.
+     * {@code XREADGROUP}). Defaults to {@code 1}.
+     *
+     * <p>Keep this at {@code 1} unless you explicitly want concurrent burst processing.
+     * A value of {@code 10} with a 200 ms poll interval translates to up to 50 entries/s
+     * per consumer; if the stream accumulates millions of entries this can flood the
+     * bounded-elastic pool with parallel dispatches.
      */
-    int batchSize() default 10;
+    int batchSize() default 1;
 
     /**
      * Milliseconds to wait between polls when no new entries are available.

@@ -402,7 +402,8 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
                                         String streamKey, String group, String consumerName,
                                         String listenerId, String channel,
                                         boolean dedupEnabled, int concurrency) {
-        StreamReadOptions readOptions = StreamReadOptions.empty().count(10);
+        StreamReadOptions readOptions = StreamReadOptions.empty()
+                .count(racerProperties.getConsumer().getPollBatchSize());
         Consumer consumer = Consumer.from(group, consumerName);
         StreamOffset<String> offset = StreamOffset.create(streamKey, ReadOffset.lastConsumed());
 

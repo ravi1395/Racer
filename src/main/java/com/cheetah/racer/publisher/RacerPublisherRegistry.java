@@ -127,7 +127,9 @@ public class RacerPublisherRegistry {
                 registry.put(alias, new RacerChannelPublisherImpl(
                         redisTemplate, objectMapper,
                         channelProps.getName(), alias, channelProps.getSender(),
-                        true, actualStreamKey, racerMetrics, schemaRegistry));
+                        true, actualStreamKey,
+                        properties.getRetention().getStreamMaxLen(),
+                        racerMetrics, schemaRegistry));
                 log.info("[racer] Channel '{}' registered → stream '{}' (durable)", alias, actualStreamKey);
             } else {
                 registry.put(alias, new RacerChannelPublisherImpl(

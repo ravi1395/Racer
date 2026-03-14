@@ -2,6 +2,7 @@ package com.cheetah.racer.publisher;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.connection.RedisStreamCommands;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.RecordId;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
@@ -36,11 +37,19 @@ public class RacerStreamPublisher {
 
     private final ReactiveRedisTemplate<String, String> redisTemplate;
     private final ObjectMapper objectMapper;
+    private final long streamMaxLen;
 
     public RacerStreamPublisher(ReactiveRedisTemplate<String, String> redisTemplate,
                                 ObjectMapper objectMapper) {
+        this(redisTemplate, objectMapper, 10_000L);
+    }
+
+    public RacerStreamPublisher(ReactiveRedisTemplate<String, String> redisTemplate,
+                                ObjectMapper objectMapper,
+                                long streamMaxLen) {
         this.redisTemplate = redisTemplate;
         this.objectMapper  = objectMapper;
+        this.streamMaxLen  = streamMaxLen;
     }
 
     /**
@@ -63,7 +72,9 @@ public class RacerStreamPublisher {
                 .flatMap(json -> {
                     MapRecord<String, String, String> record = MapRecord.create(
                             streamKey, Map.of("data", json));
-                    return redisTemplate.opsForStream().add(record);
+                    RedisStreamCommands.XAddOptions opts = RedisStreamCommands.XAddOptions
+                            .maxlen(streamMaxLen).approximateTrimming(true);
+                    return redisTemplate.opsForStream().add(record, opts);
                 })
                 .doOnSuccess(id ->
                         log.debug("[racer-stream] Published to '{}' → entry {}", streamKey, id))
