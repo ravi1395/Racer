@@ -307,6 +307,34 @@ public class RacerAutoConfiguration {
         return new DeadLetterQueueService(reactiveStringRedisTemplate, objectMapper);
     }
 
+    // ── DLQ metrics gauge ────────────────────────────────────────────────────
+
+    /**
+     * Registers the {@code racer.dlq.size} Micrometer gauge so that it appears
+     * in {@code /actuator/metrics} even when the DLQ is empty.
+     *
+     * <p>The gauge value is kept in an {@link java.util.concurrent.atomic.AtomicLong}
+     * that is refreshed every 30 seconds via a non-blocking reactive subscription.
+     * This avoids calling {@code block()} inside the Micrometer scrape path, which
+     * runs on the event loop in reactive applications and would cause
+     * Micrometer to record {@code NaN} after catching the resulting exception.
+     */
+    @Bean
+    @ConditionalOnBean(RacerMetrics.class)
+    public Object racerDlqMetricsRegistration(
+            DeadLetterQueueService deadLetterQueueService,
+            RacerMetrics racerMetrics) {
+        java.util.concurrent.atomic.AtomicLong dlqSizeCache =
+                new java.util.concurrent.atomic.AtomicLong(0L);
+        // Fetch immediately on startup, then every 30 s
+        reactor.core.publisher.Flux.interval(java.time.Duration.ofSeconds(30))
+                .startWith(0L)
+                .flatMap(tick -> deadLetterQueueService.size().onErrorReturn(0L))
+                .subscribe(dlqSizeCache::set);
+        racerMetrics.registerDlqSizeGauge(dlqSizeCache::get);
+        return "dlq-metrics-registered";
+    }
+
     // ── DLQ Reprocessor ──────────────────────────────────────────────────────
 
     @Bean
@@ -350,7 +378,8 @@ public class RacerAutoConfiguration {
             Optional<RacerSchemaRegistry> racerSchemaRegistry,
             ObjectProvider<RacerDeadLetterHandler> deadLetterHandler,
             ObjectProvider<RacerDedupService> racerDedupService,
-            ObjectProvider<RacerCircuitBreakerRegistry> racerCircuitBreakerRegistry) {
+            ObjectProvider<RacerCircuitBreakerRegistry> racerCircuitBreakerRegistry,
+            ApplicationContext applicationContext) {
         RacerStreamListenerRegistrar registrar = new RacerStreamListenerRegistrar(
                 reactiveStringRedisTemplate,
                 objectMapper,
@@ -361,6 +390,10 @@ public class RacerAutoConfiguration {
         registrar.setDeadLetterHandlerProvider(deadLetterHandler);
         registrar.setDedupServiceProvider(racerDedupService);
         registrar.setCircuitBreakerRegistryProvider(racerCircuitBreakerRegistry);
+        List<RacerMessageInterceptor> interceptors = new ArrayList<>(
+                applicationContext.getBeansOfType(RacerMessageInterceptor.class).values());
+        AnnotationAwareOrderComparator.sort(interceptors);
+        registrar.setInterceptors(interceptors);
         return registrar;
     }
 

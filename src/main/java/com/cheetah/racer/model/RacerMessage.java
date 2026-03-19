@@ -34,6 +34,13 @@ public class RacerMessage implements Serializable {
     private String priority = "NORMAL";
 
     /**
+     * Set to {@code true} by the router when a message has been forwarded via a routing rule.
+     * Messages with {@code routed=true} are skipped by the router to prevent infinite cycles.
+     */
+    @Builder.Default
+    private boolean routed = false;
+
+    /**
      * Factory method to create a new message with auto-generated id and timestamp.
      */
     public static RacerMessage create(String channel, String payload, String sender) {

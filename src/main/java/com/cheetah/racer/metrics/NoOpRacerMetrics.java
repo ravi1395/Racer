@@ -28,4 +28,5 @@ public final class NoOpRacerMetrics implements RacerMetricsPort {
     @Override public void registerBackPressureActiveGauge(Supplier<Number> activeSupplier) {}
     @Override public void recordBackPressureEvent(String state) {}
     @Override public void recordDedupDuplicate(String listenerId) {}
+    @Override public void initializeDedupCounter(String listenerId) {}
 }

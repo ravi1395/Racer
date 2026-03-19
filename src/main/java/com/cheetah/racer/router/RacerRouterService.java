@@ -146,6 +146,12 @@ public class RacerRouterService {
      *         determined by the first matching rule
      */
     public RouteDecision route(RacerMessage message) {
+        // Cycle prevention: skip routing for messages already forwarded by a routing rule
+        if (message.isRouted()) {
+            log.debug("[racer-router] Skipping already-routed message id={}", message.getId());
+            return RouteDecision.PASS;
+        }
+
         if (!globalRules.isEmpty()) {
             RouteDecision annotationDecision = evaluate(message, globalRules);
             if (annotationDecision != RouteDecision.PASS) return annotationDecision;
@@ -175,6 +181,12 @@ public class RacerRouterService {
      */
     public RouteDecision evaluate(RacerMessage message, List<CompiledRouteRule> rules) {
         if (rules.isEmpty()) return RouteDecision.PASS;
+
+        // Cycle prevention: messages already forwarded by a routing rule must not be re-routed
+        if (message.isRouted()) {
+            log.debug("[racer-router] Skipping already-routed message id={} in evaluate()", message.getId());
+            return RouteDecision.PASS;
+        }
 
         JsonNode payloadNode = null; // parsed lazily
 
@@ -216,7 +228,7 @@ public class RacerRouterService {
         RacerChannelPublisher publisher = registry.getPublisher(rule.alias());
         String sender = rule.sender().isBlank() ? message.getSender() : rule.sender();
 
-        publisher.publishAsync(message.getPayload(), sender)
+        publisher.publishRoutedAsync(message.getPayload(), sender)
                 .subscribe(
                         count -> log.debug("[racer-router] message id={} → '{}' ({} subscriber(s))",
                                 message.getId(), rule.alias(), count),
@@ -314,7 +326,7 @@ public class RacerRouterService {
         @Override
         public void publishTo(String alias, RacerMessage msg, String sender) {
             RacerChannelPublisher publisher = registry.getPublisher(alias);
-            publisher.publishAsync(msg.getPayload(), sender)
+            publisher.publishRoutedAsync(msg.getPayload(), sender)
                     .subscribe(
                             count -> log.debug("[racer-router] DSL forwarded id={} → '{}' ({} subscriber(s))",
                                     message.getId(), alias, count),

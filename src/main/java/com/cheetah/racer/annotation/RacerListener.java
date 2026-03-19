@@ -113,7 +113,7 @@ public @interface RacerListener {
      * When {@code true}, enables idempotency deduplication for this listener.
      *
      * <p>Before dispatching each message, the listener checks whether the message's
-     * {@code id} field has been processed recently (within {@code racer.dedup.ttl-seconds}).
+     * dedup key has been processed recently (within {@code racer.dedup.ttl-seconds}).
      * Duplicate messages are silently dropped without invoking the handler.
      *
      * <p>Requires {@code racer.dedup.enabled=true}. When the global flag is off, this
@@ -122,4 +122,22 @@ public @interface RacerListener {
      * @see com.cheetah.racer.dedup.RacerDedupService
      */
     boolean dedup() default false;
+
+    /**
+     * Optional field name to extract from the message payload JSON and use as the
+     * stable deduplication key when {@link #dedup()} is {@code true}.
+     *
+     * <p>When set, Racer reads this field from the deserialized payload object and uses
+     * its value (namespaced by channel and listener ID) as the Redis dedup key.  This
+     * allows messages that carry the same business identity (e.g. the same
+     * {@code orderId}) to be deduplicated even when they arrive as separate envelopes
+     * with distinct auto-generated IDs.
+     *
+     * <p>When empty (the default), Racer falls back to a SHA-256 hash of the channel
+     * plus raw payload string, so that structurally identical payloads are always
+     * deduplicated regardless of the envelope UUID.
+     *
+     * <p>Example: {@code @RacerListener(dedup = true, dedupKey = "orderId")}
+     */
+    String dedupKey() default "";
 }

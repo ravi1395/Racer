@@ -43,4 +43,10 @@ public interface RacerMetricsPort {
     void recordBackPressureEvent(String state);
 
     void recordDedupDuplicate(String listenerId);
+
+    /**
+     * Pre-registers the {@code racer.dedup.duplicates} counter for a listener so it
+     * appears in {@code /actuator/metrics} even before the first duplicate is detected.
+     */
+    void initializeDedupCounter(String listenerId);
 }

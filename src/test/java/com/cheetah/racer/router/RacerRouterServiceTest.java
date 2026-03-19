@@ -67,6 +67,10 @@ class RacerRouterServiceTest {
                 .thenReturn(Mono.just(1L));
         when(notificationsPublisher.publishAsync(anyString(), anyString()))
                 .thenReturn(Mono.just(1L));
+        when(ordersPublisher.publishRoutedAsync(anyString(), anyString()))
+                .thenReturn(Mono.just(1L));
+        when(notificationsPublisher.publishRoutedAsync(anyString(), anyString()))
+                .thenReturn(Mono.just(1L));
 
         routerService = new RacerRouterService(applicationContext, registry, objectMapper);
         routerService.init();

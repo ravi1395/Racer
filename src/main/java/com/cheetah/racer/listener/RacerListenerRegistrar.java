@@ -130,6 +130,13 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
     /** Pre-compiled per-listener routing rules (from method-level {@code @RacerRoute}). */
     private final Map<String, List<CompiledRouteRule>> perListenerRules = new ConcurrentHashMap<>();
 
+    /**
+     * Per-listener dedup field names set via {@link RacerListener#dedupKey()}.
+     * When present the named field is extracted from the payload JSON and used as the
+     * Redis dedup key instead of the auto-generated envelope UUID.
+     */
+    private final Map<String, String> perListenerDedupKeys = new ConcurrentHashMap<>();
+
     /** Ordered list of message interceptors applied before every handler invocation. */
     private volatile List<RacerMessageInterceptor> interceptors = Collections.emptyList();
 
@@ -277,7 +284,13 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
 
         final boolean dedupEnabled = ann.dedup();
 
-        // --- durable: use XREADGROUP if the channel alias is configured as durable ---
+        // Store dedupKey field name for use in dispatch(); pre-register counter at 0
+        if (dedupEnabled) {
+            if (!ann.dedupKey().isEmpty()) {
+                perListenerDedupKeys.put(listenerId, resolve(ann.dedupKey()));
+            }
+            racerMetrics.initializeDedupCounter(listenerId);
+        }
         RacerProperties.ChannelProperties chProps = channelRef.isBlank()
                 ? null : racerProperties.getChannels().get(channelRef);
         if (chProps != null && chProps.isDurable()) {
@@ -339,8 +352,19 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
 
             Disposable sub = listenerContainer
                     .receive(ChannelTopic.of(resolvedChannel))
-                    .flatMap(
-                            msg -> dispatch(bean, method, msg, listenerId, resolvedChannel, dedupEnabled),
+                    .flatMap(msg ->
+                            Mono.fromCallable(() -> msg)
+                                    .subscribeOn(listenerScheduler)
+                                    .flatMap(m ->
+                                            dispatch(bean, method, m, listenerId, resolvedChannel, dedupEnabled))
+                                    .onErrorResume(ex -> {
+                                        if (ex instanceof InterruptedException) {
+                                            Thread.currentThread().interrupt();
+                                        }
+                                        log.warn("[RACER-LISTENER] '{}' skipping message after error: {}",
+                                                listenerId, ex.getMessage());
+                                        return Mono.empty();
+                                    }),
                             effectiveConcurrency)
                     .subscribe(
                             v  -> {},
@@ -479,11 +503,13 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
 
             // 1. Deduplication check
             if (dedupEnabled && getDedupService() != null) {
-                return getDedupService().checkAndMarkProcessed(message.getId(), listenerId)
+                String effectiveDedupId = resolveEffectiveDedupId(
+                        message, perListenerDedupKeys.get(listenerId), channel);
+                return getDedupService().checkAndMarkProcessed(effectiveDedupId, listenerId)
                         .flatMap(shouldProcess -> {
                             if (!shouldProcess) {
-                                log.debug("[RACER-LISTENER] '{}' duplicate id={} — skipped",
-                                        listenerId, message.getId());
+                                log.debug("[RACER-LISTENER] '{}' duplicate dedupId={} — skipped",
+                                        listenerId, effectiveDedupId);
                                 return Mono.<Void>empty();
                             }
                             return dispatchChecked(bean, method, message, listenerId, channel, cb);
@@ -494,6 +520,49 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
         })
         .doOnSubscribe(s -> incrementInFlight())
         .doFinally(s -> decrementInFlight());
+    }
+
+    // ── Dedup key resolution ─────────────────────────────────────────────────
+
+    /**
+     * Resolves a stable dedup key for {@code message}:
+     * <ol>
+     *   <li>If {@code fieldKey} is non-null/non-empty, attempts to read that field from
+     *       the payload JSON (which is always a String since {@code MessageEnvelopeBuilder}
+     *       pre-serializes all payloads) and returns {@code channel:<fieldValue>} so that
+     *       messages sharing the same business ID are always deduplicated, regardless of the
+     *       auto-generated envelope UUID.</li>
+     *   <li>Otherwise falls back to {@code message.getId()} — the envelope UUID.  This
+     *       correctly suppresses at-most-once re-delivery of the same envelope (e.g. Redis
+     *       re-publish on retry) but does NOT deduplicate distinct publishes of logically
+     *       identical events.  Callers that require cross-publish business dedup should
+     *       either specify {@code dedupKey} or pass a stable ID via
+     *       {@link com.cheetah.racer.publisher.RacerChannelPublisher#publishAsync(Object, String, String)}.</li>
+     * </ol>
+     */
+    private String resolveEffectiveDedupId(RacerMessage message,
+                                            @Nullable String fieldKey,
+                                            String channel) {
+        if (fieldKey != null && !fieldKey.isEmpty()) {
+            String payloadStr = message.getPayload() != null ? message.getPayload() : "";
+            try {
+                com.fasterxml.jackson.databind.JsonNode node = objectMapper.readTree(payloadStr);
+                com.fasterxml.jackson.databind.JsonNode field = node.get(fieldKey);
+                if (field != null && !field.isNull()) {
+                    return channel + ":" + field.asText();
+                }
+                log.warn("[RACER-LISTENER] dedupKey '{}' not found in payload for channel '{}' — "
+                        + "falling back to envelope id. Check that the field name is correct.",
+                        fieldKey, channel);
+            } catch (Exception e) {
+                log.warn("[RACER-LISTENER] Could not extract dedupKey '{}' from payload: {} — "
+                        + "falling back to envelope id.", fieldKey, e.getMessage());
+            }
+        }
+        // Default: use the envelope UUID.
+        // When publishers use publishAsync(payload, sender, stableBusinessId) the
+        // envelope id IS the stable business key and dedup works correctly.
+        return message.getId();
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})

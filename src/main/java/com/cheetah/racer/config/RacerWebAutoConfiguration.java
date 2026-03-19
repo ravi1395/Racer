@@ -10,6 +10,8 @@ import com.cheetah.racer.web.DlqController;
 import com.cheetah.racer.web.RetentionController;
 import com.cheetah.racer.web.RouterController;
 import com.cheetah.racer.web.SchemaController;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -44,8 +46,10 @@ import org.springframework.web.reactive.DispatcherHandler;
  * </pre>
  */
 @Configuration
+@AutoConfigureAfter(RacerAutoConfiguration.class)
 @ConditionalOnClass(DispatcherHandler.class)
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.REACTIVE)
+@Slf4j
 public class RacerWebAutoConfiguration {
 
     // ── DLQ controller ───────────────────────────────────────────────────────
@@ -56,6 +60,7 @@ public class RacerWebAutoConfiguration {
     public DlqController dlqController(
             DeadLetterQueueService dlqService,
             DlqReprocessorService reprocessorService) {
+        log.info("[racer-web] DLQ controller activated at /api/dlq/**");
         return new DlqController(dlqService, reprocessorService);
     }
 

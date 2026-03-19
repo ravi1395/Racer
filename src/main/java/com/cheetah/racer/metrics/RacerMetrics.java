@@ -203,13 +203,22 @@ public class RacerMetrics implements RacerMetricsPort {
      * Registers a gauge that reports the circuit breaker state for a listener.
      * Encoded as: {@code 0 = CLOSED}, {@code 1 = OPEN}, {@code 2 = HALF_OPEN}.
      *
+     * <p>The gauge uses a strong reference to the supplied {@code stateSupplier} to
+     * prevent premature garbage collection that would cause NaN readings.
+     *
      * @param listenerId    the listener ID, used as the {@code listener} tag value
      * @param stateSupplier supplies the numeric state on each scrape
      */
     public void registerCircuitBreakerStateGauge(String listenerId, Supplier<Number> stateSupplier) {
-        Gauge.builder("racer.circuit.breaker.state", stateSupplier, s -> s.get().doubleValue())
+        // Use Tags-based registration and keep a strong reference to the supplier
+        // so Micrometer's weak-reference gauge does not get GC'd (which causes NaN).
+        Gauge.builder("racer.circuit.breaker.state", stateSupplier, s -> {
+                    Number val = s.get();
+                    return val != null ? val.doubleValue() : 0.0;
+                })
                 .description("Circuit breaker state per listener: 0=CLOSED 1=OPEN 2=HALF_OPEN")
                 .tag("listener", listenerId)
+                .strongReference(true)
                 .register(registry);
     }
 
@@ -260,5 +269,20 @@ public class RacerMetrics implements RacerMetricsPort {
                 .tag("listener", listenerId)
                 .register(registry)
                 .increment();
+    }
+
+    /**
+     * Pre-registers the {@code racer.dedup.duplicates} counter at zero for the given
+     * listener so it is immediately visible in {@code /actuator/metrics} even before
+     * the first duplicate is detected.
+     *
+     * @param listenerId the listener ID, used as the {@code listener} tag value
+     */
+    @Override
+    public void initializeDedupCounter(String listenerId) {
+        Counter.builder("racer.dedup.duplicates")
+                .description("Number of duplicate messages suppressed by the dedup service")
+                .tag("listener", listenerId)
+                .register(registry);
     }
 }

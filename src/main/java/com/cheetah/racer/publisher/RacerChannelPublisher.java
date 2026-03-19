@@ -44,6 +44,32 @@ public interface RacerChannelPublisher {
      */
     Long publishSync(Object payload);
 
+    /**
+     * Publishes {@code payload} asynchronously with an explicit message ID.
+     *
+     * <p>The supplied {@code messageId} is embedded in the envelope {@code id} field
+     * instead of a random UUID.  Pass a stable business key (e.g. an order ID) so that
+     * {@link com.cheetah.racer.dedup.RacerDedupService} can suppress repeated deliveries
+     * of the same logical event.
+     *
+     * @param payload   any serializable object
+     * @param sender    sender identifier included in the envelope
+     * @param messageId business key used as the dedup ID; if {@code null} a UUID is generated
+     * @return Mono emitting the number of subscribers that received the message
+     */
+    default Mono<Long> publishAsync(Object payload, String sender, String messageId) {
+        return publishAsync(payload, sender);
+    }
+
+    /**
+     * Publishes {@code payload} asynchronously, marking the envelope as already-routed.
+     * Messages published via this method will have {@code routed=true} in the envelope,
+     * preventing the router from re-evaluating them (cycle prevention).
+     */
+    default Mono<Long> publishRoutedAsync(Object payload, String sender) {
+        return publishAsync(payload, sender);
+    }
+
     /** Redis channel name this publisher targets (e.g. {@code racer:orders}). */
     String getChannelName();
 

@@ -129,6 +129,62 @@ public class RacerChannelPublisherImpl implements RacerChannelPublisher {
     }
 
     @Override
+    public Mono<Long> publishAsync(Object payload, String sender, String messageId) {
+        Mono<Void> validate = schemaRegistry != null
+                ? schemaRegistry.validateForPublishReactive(channelName, payload)
+                : Mono.empty();
+        return validate
+                .then(MessageEnvelopeBuilder.build(objectMapper, channelName, sender, payload, false, messageId))
+                .flatMap(json -> {
+                    if (durable) {
+                        MapRecord<String, String, String> record =
+                                MapRecord.create(durableStreamKey, Map.of("data", json));
+                        RedisStreamCommands.XAddOptions opts = streamMaxLen > 0
+                                ? RedisStreamCommands.XAddOptions.maxlen(streamMaxLen).approximateTrimming(true)
+                                : RedisStreamCommands.XAddOptions.none();
+                        return redisTemplate.opsForStream()
+                                .add(record, opts)
+                                .map(id -> 1L);
+                    }
+                    return redisTemplate.convertAndSend(channelName, json);
+                })
+                .doOnSuccess(count -> {
+                    log.debug("[racer] Published to '{}' ({})", channelName, durable ? "stream" : "pubsub");
+                    racerMetrics.recordPublished(channelName, durable ? "stream" : "pubsub");
+                })
+                .doOnError(ex ->
+                        log.error("[racer] Failed to publish to '{}': {}", channelName, ex.getMessage()));
+    }
+
+    @Override
+    public Mono<Long> publishRoutedAsync(Object payload, String sender) {
+        Mono<Void> validate = schemaRegistry != null
+                ? schemaRegistry.validateForPublishReactive(channelName, payload)
+                : Mono.empty();
+        return validate
+                .then(MessageEnvelopeBuilder.build(objectMapper, channelName, sender, payload, true))
+                .flatMap(json -> {
+                    if (durable) {
+                        MapRecord<String, String, String> record =
+                                MapRecord.create(durableStreamKey, Map.of("data", json));
+                        RedisStreamCommands.XAddOptions opts = streamMaxLen > 0
+                                ? RedisStreamCommands.XAddOptions.maxlen(streamMaxLen).approximateTrimming(true)
+                                : RedisStreamCommands.XAddOptions.none();
+                        return redisTemplate.opsForStream()
+                                .add(record, opts)
+                                .map(id -> 1L);
+                    }
+                    return redisTemplate.convertAndSend(channelName, json);
+                })
+                .doOnSuccess(count -> {
+                    log.debug("[racer] Published (routed) to '{}' ({})", channelName, durable ? "stream" : "pubsub");
+                    racerMetrics.recordPublished(channelName, durable ? "stream" : "pubsub");
+                })
+                .doOnError(ex ->
+                        log.error("[racer] Failed to publish (routed) to '{}': {}", channelName, ex.getMessage()));
+    }
+
+    @Override
     public Long publishSync(Object payload) {
         return publishAsync(payload, defaultSender)
                 .block(SYNC_TIMEOUT);

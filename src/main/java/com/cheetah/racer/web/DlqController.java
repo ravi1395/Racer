@@ -26,6 +26,15 @@ public class DlqController {
     private final DlqReprocessorService reprocessorService;
 
     /**
+     * GET /api/dlq
+     * Lists all messages currently in the DLQ (alias for /api/dlq/messages).
+     */
+    @GetMapping
+    public Flux<DeadLetterMessage> getRootMessages() {
+        return dlqService.peekAll();
+    }
+
+    /**
      * GET /api/dlq/messages
      * Lists all messages currently in the DLQ.
      */

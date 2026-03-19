@@ -7,7 +7,9 @@ import com.cheetah.racer.circuitbreaker.RacerCircuitBreakerRegistry;
 import com.cheetah.racer.config.RacerProperties;
 import com.cheetah.racer.dedup.RacerDedupService;
 import com.cheetah.racer.listener.AbstractRacerRegistrar;
+import com.cheetah.racer.listener.InterceptorContext;
 import com.cheetah.racer.listener.RacerDeadLetterHandler;
+import com.cheetah.racer.listener.RacerMessageInterceptor;
 import com.cheetah.racer.metrics.NoOpRacerMetrics;
 import com.cheetah.racer.metrics.RacerMetrics;
 import com.cheetah.racer.metrics.RacerMetricsPort;
@@ -31,6 +33,7 @@ import reactor.util.retry.Retry;
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -88,6 +91,18 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
 
     /** (streamKey, group) pairs that have been registered, used by {@link RacerConsumerLagMonitor}. */
     private final Map<String, String> trackedStreamGroups = new ConcurrentHashMap<>();
+
+    /** Ordered list of message interceptors applied before every handler invocation. */
+    private volatile List<RacerMessageInterceptor> interceptors = Collections.emptyList();
+
+    /**
+     * Injects the ordered list of {@link RacerMessageInterceptor} beans.
+     * Called by {@link com.cheetah.racer.config.RacerAutoConfiguration} after the
+     * application context has collected all interceptor beans.
+     */
+    public void setInterceptors(List<RacerMessageInterceptor> interceptors) {
+        this.interceptors = interceptors != null ? interceptors : Collections.emptyList();
+    }
 
     public void setDedupService(RacerDedupService dedupService) {
         this.dedupService = dedupService;
@@ -192,8 +207,10 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
         // Register for consumer-lag tracking (3.4)
         trackedStreamGroups.put(streamKey, group);
 
-        log.info("[RACER-STREAM-LISTENER] Registering {}.{}() <- stream '{}' group='{}' mode={} concurrency={}",
-                beanName, method.getName(), streamKey, group, ann.mode(), concurrencyN);
+        final boolean dedupEnabled = ann.dedup();
+
+        log.info("[RACER-STREAM-LISTENER] Registering {}.{}() <- stream '{}' group='{}' mode={} concurrency={} dedup={}",
+                beanName, method.getName(), streamKey, group, ann.mode(), concurrencyN, dedupEnabled);
 
         final String finalStreamKey = streamKey;
         final String finalListenerId = listenerId;
@@ -208,7 +225,7 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
                     for (int i = 0; i < concurrencyN; i++) {
                         String consumerName = listenerId + "-" + i;
                         Disposable d = buildPollLoop(bean, method, finalStreamKey, group,
-                                consumerName, batchSize, pollInterval, finalListenerId)
+                                consumerName, batchSize, pollInterval, finalListenerId, dedupEnabled)
                                 .subscribe(
                                         n -> {},
                                         ex -> log.error("[RACER-STREAM-LISTENER] Consumer '{}' errored: {}",
@@ -226,8 +243,9 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
 
     private Flux<Void> buildPollLoop(Object bean, Method method,
                                      String streamKey, String group, String consumer,
-                                     int batchSize, Duration pollInterval, String listenerId) {
-        return Flux.defer(() -> pollOnce(bean, method, streamKey, group, consumer, batchSize, listenerId))
+                                     int batchSize, Duration pollInterval, String listenerId,
+                                     boolean dedupEnabled) {
+        return Flux.defer(() -> pollOnce(bean, method, streamKey, group, consumer, batchSize, listenerId, dedupEnabled))
                 .repeatWhen(completed -> completed.flatMap(v -> {
                     long overrideMs = backPressurePollOverrideMs.get();
                     long delayMs = overrideMs > 0 ? overrideMs : pollInterval.toMillis();
@@ -240,7 +258,7 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
     @SuppressWarnings("unchecked")
     private Flux<Void> pollOnce(Object bean, Method method,
                                 String streamKey, String group, String consumer,
-                                int batchSize, String listenerId) {
+                                int batchSize, String listenerId, boolean dedupEnabled) {
         StreamReadOptions readOptions = StreamReadOptions.empty().count(batchSize);
         StreamOffset<String> offset   = StreamOffset.create(streamKey, ReadOffset.lastConsumed());
         Consumer redisConsumer = Consumer.from(group, consumer);
@@ -257,7 +275,7 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
                         return RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, record.getId());
                     }
                     incrementInFlight();
-                    return processRecord(bean, method, streamKey, group, record, listenerId)
+                    return processRecord(bean, method, streamKey, group, record, listenerId, dedupEnabled)
                             .doFinally(s -> decrementInFlight());
                 });
     }
@@ -265,7 +283,8 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
     @SuppressWarnings({"rawtypes", "unchecked"})
     private Mono<Void> processRecord(Object bean, Method method,
                                      String streamKey, String group,
-                                     MapRecord<String, Object, Object> record, String listenerId) {
+                                     MapRecord<String, Object, Object> record, String listenerId,
+                                     boolean dedupEnabled) {
         RecordId recordId = record.getId();
         Map<Object, Object> fields = record.getValue();
 
@@ -296,8 +315,8 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
             return RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, recordId);
         }
 
-        // 0b. Deduplication check
-        if (getDedupService() != null) {
+        // 0b. Deduplication check (only when annotation flag is set)
+        if (dedupEnabled && getDedupService() != null) {
             return getDedupService().checkAndMarkProcessed(message.getId(), listenerId)
                     .flatMap(shouldProcess -> {
                         if (!shouldProcess) {
@@ -348,35 +367,67 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
         final boolean isNoArg     = method.getParameterCount() == 0;
         final RacerMessage captured = message;
 
-        Mono<Void> invocation = Mono
-                .fromCallable(() -> isNoArg
-                        ? method.invoke(bean)
-                        : method.invoke(bean, resolvedArg))
-                .subscribeOn(Schedulers.boundedElastic())
-                .flatMap(result -> {
-                    if (result instanceof Mono<?> mono) return mono.then();
-                    return Mono.<Void>empty();
-                });
+        // Interceptor chain → invoke handler
+        return buildInterceptorChain(message, listenerId, streamKey, method)
+                .flatMap(intercepted -> {
+                    // Re-resolve argument if interceptor mutated the message
+                    final Object finalArg;
+                    if (intercepted != message && !isNoArg) {
+                        try {
+                            finalArg = resolveArgument(method, intercepted);
+                        } catch (Exception e) {
+                            log.error("[RACER-STREAM-LISTENER] '{}' — cannot resolve argument after intercept for {}: {}", listenerId, recordId, e.getMessage());
+                            if (cb != null) cb.onFailure();
+                            return enqueueDeadLetter(intercepted, e)
+                                    .then(RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, recordId))
+                                    .doOnTerminate(() -> incrementFailed(listenerId));
+                        }
+                    } else {
+                        finalArg = resolvedArg;
+                    }
 
-        return invocation
-                .then(RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, recordId))
-                .doOnSuccess(v -> {
-                    incrementProcessed(listenerId);
-                    if (cb != null) cb.onSuccess();
-                    racerMetrics.recordConsumed(streamKey, listenerId);
-                    log.debug("[RACER-STREAM-LISTENER] '{}' processed entry {}", listenerId, recordId);
-                })
-                .onErrorResume(ex -> {
-                    incrementFailed(listenerId);
-                    Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
-                    if (cb != null) cb.onFailure();
-                    log.error("[RACER-STREAM-LISTENER] '{}' failed entry {}: {}", listenerId, recordId, cause.getMessage(), cause);
-                    return enqueueDeadLetter(captured, cause)
-                            .then(RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, recordId));
+                    Mono<Void> invocation = Mono
+                            .fromCallable(() -> isNoArg
+                                    ? method.invoke(bean)
+                                    : method.invoke(bean, finalArg))
+                            .subscribeOn(Schedulers.boundedElastic())
+                            .flatMap(result -> {
+                                if (result instanceof Mono<?> mono) return mono.then();
+                                return Mono.<Void>empty();
+                            });
+
+                    return invocation
+                            .then(RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, recordId))
+                            .doOnSuccess(v -> {
+                                incrementProcessed(listenerId);
+                                if (cb != null) cb.onSuccess();
+                                racerMetrics.recordConsumed(streamKey, listenerId);
+                                log.debug("[RACER-STREAM-LISTENER] '{}' processed entry {}", listenerId, recordId);
+                            })
+                            .onErrorResume(ex -> {
+                                incrementFailed(listenerId);
+                                Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+                                if (cb != null) cb.onFailure();
+                                log.error("[RACER-STREAM-LISTENER] '{}' failed entry {}: {}", listenerId, recordId, cause.getMessage(), cause);
+                                return enqueueDeadLetter(intercepted, cause)
+                                        .then(RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, recordId));
+                            });
                 });
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
+
+    /** Builds the ordered interceptor chain around a single message. */
+    private Mono<RacerMessage> buildInterceptorChain(RacerMessage message,
+                                                      String listenerId, String streamKey, Method method) {
+        if (interceptors.isEmpty()) return Mono.just(message);
+        InterceptorContext ctx = new InterceptorContext(listenerId, streamKey, method);
+        Mono<RacerMessage> chain = Mono.just(message);
+        for (RacerMessageInterceptor interceptor : interceptors) {
+            chain = chain.flatMap(msg -> interceptor.intercept(msg, ctx));
+        }
+        return chain;
+    }
 
     private Mono<Void> ensureGroup(String streamKey, String group) {
         return RacerStreamUtils.ensureGroup(redisTemplate, streamKey, group);
