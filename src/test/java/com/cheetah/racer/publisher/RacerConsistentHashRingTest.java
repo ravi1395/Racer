@@ -22,6 +22,12 @@ class RacerConsistentHashRingTest {
     }
 
     @Test
+    void constructor_rejectsNegativeShards() {
+        assertThatThrownBy(() -> new RacerConsistentHashRing(-1, 10))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void constructor_rejectsZeroVirtualNodes() {
         assertThatThrownBy(() -> new RacerConsistentHashRing(3, 0))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -120,5 +126,28 @@ class RacerConsistentHashRingTest {
         String key = "stable-key";
 
         assertThat(ring.getFailoverShardFor(key)).isEqualTo(ring.getFailoverShardFor(key));
+    }
+
+    // ── Distribution uniformity ───────────────────────────────────────────────
+
+    @Test
+    void getShardFor_distributionIsRoughlyUniform() {
+        int shardCount = 4;
+        RacerConsistentHashRing ring = new RacerConsistentHashRing(shardCount, 200);
+        java.util.Map<Integer, Integer> counts = new java.util.HashMap<>();
+        int total = 1000;
+
+        for (int i = 0; i < total; i++) {
+            counts.merge(ring.getShardFor("msg-" + i), 1, Integer::sum);
+        }
+
+        // Each shard should receive between 10% and 40% of keys with 200 virtual nodes
+        for (int s = 0; s < shardCount; s++) {
+            int count = counts.getOrDefault(s, 0);
+            assertThat(count)
+                    .as("Shard %d: %d/%d keys", s, count, total)
+                    .isGreaterThan(total / 10)
+                    .isLessThan(total * 40 / 100);
+        }
     }
 }

@@ -80,15 +80,14 @@ public abstract class AbstractRacerRegistrar
      * {@link ObjectProvider} on first access if necessary.
      */
     @Nullable
-    protected RacerDeadLetterHandler getDeadLetterHandler() {
-        // Benign race: concurrent callers may both resolve the provider, but the result
-        // is the same singleton bean — no synchronization needed.
-        RacerDeadLetterHandler handler = deadLetterHandler;
-        if (handler == null && deadLetterHandlerProvider != null) {
-            handler = deadLetterHandlerProvider.getIfAvailable();
-            deadLetterHandler = handler;
+    protected synchronized RacerDeadLetterHandler getDeadLetterHandler() {
+        // M-3 fix: synchronized to prevent double-initialization under concurrent
+        // first calls at startup. The volatile field alone would allow two threads
+        // to both see null, both call getIfAvailable(), and both write the result.
+        if (deadLetterHandler == null && deadLetterHandlerProvider != null) {
+            deadLetterHandler = deadLetterHandlerProvider.getIfAvailable();
         }
-        return handler;
+        return deadLetterHandler;
     }
 
     // ── Template methods ──────────────────────────────────────────────────────
