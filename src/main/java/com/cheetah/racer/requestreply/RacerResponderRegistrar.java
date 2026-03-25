@@ -3,9 +3,6 @@ package com.cheetah.racer.requestreply;
 import com.cheetah.racer.annotation.ConcurrencyMode;
 import com.cheetah.racer.annotation.RacerResponder;
 import com.cheetah.racer.config.RacerProperties;
-import com.cheetah.racer.metrics.NoOpRacerMetrics;
-import com.cheetah.racer.metrics.RacerMetrics;
-import com.cheetah.racer.metrics.RacerMetricsPort;
 import com.cheetah.racer.model.RacerReply;
 import com.cheetah.racer.model.RacerRequest;
 import com.cheetah.racer.stream.RacerStreamUtils;
@@ -22,6 +19,7 @@ import org.springframework.data.redis.connection.stream.*;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.data.redis.listener.ChannelTopic;
 import org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;
+import org.springframework.lang.NonNull;
 import org.springframework.lang.Nullable;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
@@ -71,7 +69,6 @@ public class RacerResponderRegistrar implements BeanPostProcessor, EnvironmentAw
     private final ReactiveRedisTemplate<String, String> redisTemplate;
     private final ObjectMapper objectMapper;
     private final RacerProperties racerProperties;
-    private final RacerMetricsPort racerMetrics;
 
     private Environment environment;
 
@@ -83,22 +80,20 @@ public class RacerResponderRegistrar implements BeanPostProcessor, EnvironmentAw
             @Nullable ReactiveRedisMessageListenerContainer listenerContainer,
             ReactiveRedisTemplate<String, String> redisTemplate,
             ObjectMapper objectMapper,
-            RacerProperties racerProperties,
-            @Nullable RacerMetrics racerMetrics) {
+            RacerProperties racerProperties) {
         this.listenerContainer = listenerContainer;
         this.redisTemplate     = redisTemplate;
         this.objectMapper      = objectMapper;
         this.racerProperties   = racerProperties;
-        this.racerMetrics      = racerMetrics != null ? racerMetrics : new NoOpRacerMetrics();
     }
 
     @Override
-    public void setEnvironment(Environment environment) {
+    public void setEnvironment(@NonNull Environment environment) {
         this.environment = environment;
     }
 
     @Override
-    public Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
+    public Object postProcessAfterInitialization(@NonNull Object bean, @NonNull String beanName) throws BeansException {
         Class<?> targetClass = AopProxyUtils.ultimateTargetClass(bean);
         for (Method method : targetClass.getDeclaredMethods()) {
             RacerResponder ann = method.getAnnotation(RacerResponder.class);
@@ -147,7 +142,8 @@ public class RacerResponderRegistrar implements BeanPostProcessor, EnvironmentAw
     // ── Pub/Sub responder ─────────────────────────────────────────────────────
 
     private void registerPubSubResponder(Object bean, Method method, RacerResponder ann, String responderId) {
-        if (listenerContainer == null) {
+        var container = this.listenerContainer;
+        if (container == null) {
             log.warn("[RACER-RESPONDER] '{}' uses Pub/Sub mode but no ReactiveRedisMessageListenerContainer is available — skipped.", responderId);
             return;
         }
@@ -157,7 +153,7 @@ public class RacerResponderRegistrar implements BeanPostProcessor, EnvironmentAw
 
         log.info("[RACER-RESPONDER] Registering Pub/Sub responder '{}' <- channel '{}'", responderId, channel);
 
-        Disposable sub = listenerContainer
+        Disposable sub = container
                 .receive(ChannelTopic.of(channel))
                 .flatMap(
                         msg -> handlePubSubMessage(bean, method, msg.getMessage(), responderId),
@@ -275,7 +271,6 @@ public class RacerResponderRegistrar implements BeanPostProcessor, EnvironmentAw
                 .doOnError(ex -> log.error("[RACER-RESPONDER] Stream record {} processing failed: {}", recordId, ex.getMessage()));
     }
 
-    @SuppressWarnings("unchecked")
     private Mono<Void> writeStreamReply(String responseStreamKey, RacerReply reply) {
         try {
             String json = objectMapper.writeValueAsString(reply);
@@ -289,7 +284,6 @@ public class RacerResponderRegistrar implements BeanPostProcessor, EnvironmentAw
 
     // ── Method invocation ─────────────────────────────────────────────────────
 
-    @SuppressWarnings({"unchecked", "rawtypes"})
     private Mono<RacerReply> invokeAndReply(Object bean, Method method, RacerRequest request, String responderId) {
         Object arg;
         try {

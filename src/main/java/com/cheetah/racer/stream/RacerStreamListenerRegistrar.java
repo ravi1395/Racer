@@ -23,6 +23,7 @@ import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.data.redis.connection.stream.*;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
+import org.springframework.lang.NonNull;
 import org.springframework.lang.Nullable;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
@@ -179,7 +180,7 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
     // ── BeanPostProcessor ────────────────────────────────────────────────────
 
     @Override
-    public Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
+    public Object postProcessAfterInitialization(@NonNull Object bean, @NonNull String beanName) throws BeansException {
         Class<?> targetClass = AopProxyUtils.ultimateTargetClass(bean);
         for (Method method : targetClass.getDeclaredMethods()) {
             RacerStreamListener ann = method.getAnnotation(RacerStreamListener.class);
@@ -296,7 +297,6 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
                 });
     }
 
-    @SuppressWarnings({"rawtypes", "unchecked"})
     private Mono<Void> processRecord(Object bean, Method method,
                                      String streamKey, String group,
                                      MapRecord<String, Object, Object> record, String listenerId,
@@ -347,7 +347,6 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
         return processChecked(bean, method, streamKey, group, record, listenerId, message, cb);
     }
 
-    @SuppressWarnings({"rawtypes", "unchecked"})
     private Mono<Void> processChecked(Object bean, Method method,
                                       String streamKey, String group,
                                       MapRecord<String, Object, Object> record, String listenerId,
@@ -381,7 +380,6 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
 
         final Object resolvedArg  = arg;
         final boolean isNoArg     = method.getParameterCount() == 0;
-        final RacerMessage captured = message;
 
         // Interceptor chain → invoke handler
         return buildInterceptorChain(message, listenerId, streamKey, method)

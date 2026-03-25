@@ -26,7 +26,6 @@ public class RacerConsistentHashRing {
     private final TreeMap<Integer, Integer> ring = new TreeMap<>();
 
     private final int shardCount;
-    private final int virtualNodesPerShard;
 
     /**
      * Build a new ring.
@@ -39,7 +38,6 @@ public class RacerConsistentHashRing {
         if (virtualNodesPerShard <= 0) throw new IllegalArgumentException("virtualNodesPerShard must be > 0");
 
         this.shardCount = shardCount;
-        this.virtualNodesPerShard = virtualNodesPerShard;
 
         for (int shard = 0; shard < shardCount; shard++) {
             for (int v = 0; v < virtualNodesPerShard; v++) {

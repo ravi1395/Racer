@@ -119,8 +119,9 @@ public class RacerConsumerLagMonitor {
 
     private Mono<Void> scrapeOne(String streamKey, String group, AtomicLong counter) {
         return redisTemplate.opsForStream()
-                .<String, String>pending(streamKey, group)
+                .pending(streamKey, group)
                 .map(PendingMessagesSummary::getTotalPendingMessages)
+                .switchIfEmpty(Mono.just(0L))
                 .doOnNext(lag -> {
                     counter.set(lag);
                     long threshold = racerProperties.getConsumerLag().getLagWarnThreshold();

@@ -44,12 +44,13 @@ public class SchemaController {
      */
     @GetMapping
     public Mono<ResponseEntity<Map<String, Object>>> listSchemas() {
-        if (schemaRegistry == null) {
+        RacerSchemaRegistry registry = this.schemaRegistry;
+        if (registry == null) {
             return Mono.just(ResponseEntity.ok(schemaDisabledResponse()));
         }
 
         Map<String, Object> definitions = new LinkedHashMap<>();
-        schemaRegistry.getDefinitions().forEach((alias, def) -> {
+        registry.getDefinitions().forEach((alias, def) -> {
             Map<String, Object> info = new LinkedHashMap<>();
             info.put("version", def.getVersion());
             info.put("description", def.getDescription());
@@ -71,11 +72,12 @@ public class SchemaController {
      */
     @GetMapping("/{alias}")
     public Mono<ResponseEntity<Object>> getSchema(@PathVariable String alias) {
-        if (schemaRegistry == null) {
+        RacerSchemaRegistry registry = this.schemaRegistry;
+        if (registry == null) {
             return Mono.just(ResponseEntity.ok((Object) schemaDisabledResponse()));
         }
 
-        String schemaJson = schemaRegistry.getSchemaJson(alias);
+        String schemaJson = registry.getSchemaJson(alias);
         if (schemaJson == null) {
             // Do not echo user-supplied alias back in the error body (prevents input reflection)
             return Mono.just(ResponseEntity.status(HttpStatus.NOT_FOUND)
@@ -95,7 +97,8 @@ public class SchemaController {
      */
     @PostMapping("/validate")
     public Mono<ResponseEntity<Map<String, Object>>> validate(@RequestBody Map<String, Object> body) {
-        if (schemaRegistry == null) {
+        RacerSchemaRegistry registry = this.schemaRegistry;
+        if (registry == null) {
             return Mono.just(ResponseEntity.ok(schemaDisabledResponse()));
         }
 
@@ -107,13 +110,13 @@ public class SchemaController {
                     Map.of("error", "'channel' field is required")));
         }
 
-        if (!schemaRegistry.hasSchema(channel)) {
+        if (!registry.hasSchema(channel)) {
             // Do not echo user-supplied channel back in the error body (prevents input reflection)
             return Mono.just(ResponseEntity.status(HttpStatus.NOT_FOUND).body(
                     Map.of("error", "No schema registered for the requested channel")));
         }
 
-        List<SchemaViolation> violations = schemaRegistry.validateAdHoc(channel, payload);
+        List<SchemaViolation> violations = registry.validateAdHoc(channel, payload);
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("channel", channel);

@@ -9,6 +9,7 @@ import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.context.EnvironmentAware;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.core.env.Environment;
+import org.springframework.lang.NonNull;
 import org.springframework.lang.Nullable;
 import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
@@ -110,7 +111,7 @@ public abstract class AbstractRacerRegistrar
     }
 
     @Override
-    public void stop(Runnable callback) {
+    public void stop(@NonNull Runnable callback) {
         log.info("[{}] Graceful shutdown — waiting up to {}s for in-flight messages to drain...",
                 logPrefix(), racerProperties.getShutdown().getTimeoutSeconds());
         stopping.set(true);
@@ -147,12 +148,12 @@ public abstract class AbstractRacerRegistrar
     // ── BeanPostProcessor / EnvironmentAware default ──────────────────────────
 
     @Override
-    public Object postProcessBeforeInitialization(Object bean, String beanName) throws BeansException {
+    public Object postProcessBeforeInitialization(@NonNull Object bean, @NonNull String beanName) throws BeansException {
         return bean;
     }
 
     @Override
-    public void setEnvironment(Environment environment) {
+    public void setEnvironment(@NonNull Environment environment) {
         this.environment = environment;
     }
 

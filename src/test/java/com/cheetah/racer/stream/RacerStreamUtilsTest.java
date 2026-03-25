@@ -29,7 +29,6 @@ class RacerStreamUtilsTest {
     @Mock
     ReactiveStreamOperations<String, Object, Object> streamOps;
 
-    @SuppressWarnings("unchecked")
     @BeforeEach
     void setUp() {
         when(redisTemplate.opsForStream()).thenReturn(streamOps);

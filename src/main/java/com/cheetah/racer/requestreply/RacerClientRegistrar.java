@@ -15,6 +15,7 @@ import org.springframework.context.annotation.ImportBeanDefinitionRegistrar;
 import org.springframework.core.env.Environment;
 import org.springframework.core.type.AnnotationMetadata;
 import org.springframework.core.type.filter.AnnotationTypeFilter;
+import org.springframework.lang.NonNull;
 import org.springframework.util.ClassUtils;
 import org.springframework.util.StringUtils;
 
@@ -34,13 +35,13 @@ public class RacerClientRegistrar implements ImportBeanDefinitionRegistrar, Envi
     private Environment environment;
 
     @Override
-    public void setEnvironment(Environment environment) {
+    public void setEnvironment(@NonNull Environment environment) {
         this.environment = environment;
     }
 
     @Override
-    public void registerBeanDefinitions(AnnotationMetadata importingClassMetadata,
-                                        BeanDefinitionRegistry registry) {
+    public void registerBeanDefinitions(@NonNull AnnotationMetadata importingClassMetadata,
+                                        @NonNull BeanDefinitionRegistry registry) {
         Set<String> basePackages = getBasePackages(importingClassMetadata);
 
         ClassPathScanningCandidateComponentProvider scanner = buildScanner();
@@ -97,7 +98,7 @@ public class RacerClientRegistrar implements ImportBeanDefinitionRegistrar, Envi
         ClassPathScanningCandidateComponentProvider scanner =
                 new ClassPathScanningCandidateComponentProvider(false, environment) {
                     @Override
-                    protected boolean isCandidateComponent(AnnotatedBeanDefinition beanDefinition) {
+                    protected boolean isCandidateComponent(@NonNull AnnotatedBeanDefinition beanDefinition) {
                         return beanDefinition.getMetadata().isInterface();
                     }
                 };

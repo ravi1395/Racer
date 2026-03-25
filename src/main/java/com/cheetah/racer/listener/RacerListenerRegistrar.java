@@ -32,6 +32,7 @@ import org.springframework.data.redis.connection.stream.StreamReadOptions;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.data.redis.listener.ChannelTopic;
 import org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;
+import org.springframework.lang.NonNull;
 import org.springframework.lang.Nullable;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
@@ -256,7 +257,7 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
     // ── BeanPostProcessor ────────────────────────────────────────────────────
 
     @Override
-    public Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
+    public Object postProcessAfterInitialization(@NonNull Object bean, @NonNull String beanName) throws BeansException {
         Class<?> targetClass = AopProxyUtils.ultimateTargetClass(bean);
         for (Method method : targetClass.getDeclaredMethods()) {
             RacerListener ann = method.getAnnotation(RacerListener.class);
@@ -480,7 +481,6 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
     // ── Dispatch ─────────────────────────────────────────────────────────────
 
     /** Pub/Sub convenience overload — delegates to the raw-JSON overload. */
-    @SuppressWarnings({"unchecked", "rawtypes"})
     private Mono<Void> dispatch(Object bean, Method method,
                                 ReactiveSubscription.Message<String, String> redisMsg,
                                 String listenerId, String channel, boolean dedupEnabled) {
@@ -488,7 +488,6 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
     }
 
     /** Core dispatch — deserialization, dedup, circuit-breaker, routing, and invocation. */
-    @SuppressWarnings({"unchecked", "rawtypes"})
     private Mono<Void> dispatch(Object bean, Method method,
                                 String rawJson,
                                 String listenerId, String channel, boolean dedupEnabled) {
@@ -600,7 +599,6 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
         return message.getId();
     }
 
-    @SuppressWarnings({"unchecked", "rawtypes"})
     private Mono<Void> dispatchChecked(Object bean, Method method,
                                        RacerMessage message,
                                        String listenerId, String channel,
@@ -611,9 +609,10 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
         if (racerRouterService == null) {
             routeStep = Mono.just(RouteDecision.PASS);
         } else if (listenerRules != null) {
-            routeStep = racerRouterService.evaluateReactive(message, listenerRules)
+            var router = racerRouterService;
+            routeStep = router.evaluateReactive(message, listenerRules)
                     .flatMap(d -> d == RouteDecision.PASS
-                            ? racerRouterService.routeReactive(message)
+                            ? router.routeReactive(message)
                             : Mono.just(d));
         } else {
             routeStep = racerRouterService.routeReactive(message);
@@ -658,7 +657,6 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
         return chain;
     }
 
-    @SuppressWarnings({"unchecked", "rawtypes"})
     private Mono<Void> invokeLocal(Object bean, Method method,
                                    RacerMessage message,
                                    String listenerId, String channel,

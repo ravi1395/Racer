@@ -3,7 +3,6 @@ package com.cheetah.racer.web;
 import com.cheetah.racer.circuitbreaker.RacerCircuitBreakerRegistry;
 import com.cheetah.racer.config.RacerProperties;
 import com.cheetah.racer.publisher.RacerPublisherRegistry;
-import com.cheetah.racer.ratelimit.RacerRateLimiter;
 import lombok.RequiredArgsConstructor;
 import org.springframework.lang.Nullable;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -42,9 +41,6 @@ public class RacerAdminController {
 
     @Nullable
     private final RacerCircuitBreakerRegistry circuitBreakerRegistry;
-
-    @Nullable
-    private final RacerRateLimiter rateLimiter;
 
     // ── Overview ─────────────────────────────────────────────────────────────
 
@@ -112,11 +108,12 @@ public class RacerAdminController {
      */
     @GetMapping("/circuitbreakers")
     public Mono<Map<String, Object>> circuitBreakers() {
-        if (circuitBreakerRegistry == null) {
+        RacerCircuitBreakerRegistry cbRegistry = this.circuitBreakerRegistry;
+        if (cbRegistry == null) {
             return Mono.just(Map.of("enabled", false, "circuitBreakers", Map.of()));
         }
         Map<String, Object> breakers = new LinkedHashMap<>();
-        circuitBreakerRegistry.getAll().forEach(cb -> {
+        cbRegistry.getAll().forEach(cb -> {
             Map<String, Object> info = new LinkedHashMap<>();
             info.put("state",           cb.getState().name());
             info.put("transitionCount", cb.getTransitionCount());

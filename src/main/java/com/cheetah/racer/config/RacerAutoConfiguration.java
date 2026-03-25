@@ -553,14 +553,12 @@ public class RacerAutoConfiguration {
             Optional<ReactiveRedisMessageListenerContainer> listenerContainer,
             ReactiveRedisTemplate<String, String> reactiveStringRedisTemplate,
             RacerProperties racerProperties,
-            ObjectMapper objectMapper,
-            Optional<RacerMetrics> racerMetrics) {
+            ObjectMapper objectMapper) {
         return new RacerResponderRegistrar(
                 listenerContainer.orElse(null),
                 reactiveStringRedisTemplate,
                 objectMapper,
-                racerProperties,
-                racerMetrics.orElse(null));
+                racerProperties);
     }
 
     // ── @PublishResult void-method startup validation ──────────────────────

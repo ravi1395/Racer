@@ -2,7 +2,6 @@ package com.cheetah.racer.config;
 
 import com.cheetah.racer.circuitbreaker.RacerCircuitBreakerRegistry;
 import com.cheetah.racer.publisher.RacerPublisherRegistry;
-import com.cheetah.racer.ratelimit.RacerRateLimiter;
 import com.cheetah.racer.router.RacerRouterService;
 import com.cheetah.racer.service.DeadLetterQueueService;
 import com.cheetah.racer.service.DlqReprocessorService;
@@ -124,13 +123,11 @@ public class RacerWebAutoConfiguration {
     public RacerAdminController racerAdminController(
             RacerPublisherRegistry racerPublisherRegistry,
             RacerProperties racerProperties,
-            ObjectProvider<RacerCircuitBreakerRegistry> circuitBreakerRegistryProvider,
-            ObjectProvider<RacerRateLimiter> rateLimiterProvider) {
+            ObjectProvider<RacerCircuitBreakerRegistry> circuitBreakerRegistryProvider) {
         log.info("[racer-web] Admin controller activated at /api/admin/**");
         return new RacerAdminController(
                 racerPublisherRegistry,
                 racerProperties,
-                circuitBreakerRegistryProvider.getIfAvailable(),
-                rateLimiterProvider.getIfAvailable());
+                circuitBreakerRegistryProvider.getIfAvailable());
     }
 }

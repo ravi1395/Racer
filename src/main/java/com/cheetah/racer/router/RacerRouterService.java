@@ -504,11 +504,12 @@ public class RacerRouterService {
 
         @Override
         public void publishToWithPriority(String alias, RacerMessage msg, String level) {
-            if (priorityPublisher != null) {
+            var pp = priorityPublisher;
+            if (pp != null) {
                 String channelName = registry.getPublisher(alias).getChannelName();
                 String sender = msg.getSender();
                 pendingPublishes.add(
-                        priorityPublisher.publish(channelName, msg.getPayload(), sender, level.toUpperCase())
+                        pp.publish(channelName, msg.getPayload(), sender, level.toUpperCase())
                                 .doOnNext(count -> log.debug("[racer-router] DSL priority-forwarded id={} → '{}:priority:{}' ({} subscriber(s))",
                                         message.getId(), alias, level, count))
                                 .doOnError(ex -> {

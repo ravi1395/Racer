@@ -150,7 +150,6 @@ public class PublishResultAspect {
                 m -> java.util.Optional.ofNullable(m.getAnnotation(RacerPriority.class))).orElse(null);
     }
 
-    @SuppressWarnings("unchecked")
     private Mono<?> applyMonoDispatch(Mono<?> mono, PublishResult ann,
                                        @Nullable String priorityLevel) {
         String channel   = resolveChannel(ann);
@@ -164,7 +163,6 @@ public class PublishResultAspect {
                         channel, ex.getMessage()));
     }
 
-    @SuppressWarnings("unchecked")
     private Flux<?> applyFluxDispatch(Flux<?> flux, PublishResult ann,
                                        @Nullable String priorityLevel) {
         String channel   = resolveChannel(ann);
@@ -214,8 +212,9 @@ public class PublishResultAspect {
         if (!annotation.sender().isBlank()) {
             return annotation.sender();
         }
-        if (properties != null && !channelRef.isBlank()) {
-            RacerProperties.ChannelProperties channelProps = properties.getChannels().get(channelRef);
+        RacerProperties props = this.properties;
+        if (props != null && !channelRef.isBlank()) {
+            RacerProperties.ChannelProperties channelProps = props.getChannels().get(channelRef);
             if (channelProps != null && channelProps.getSender() != null
                     && !channelProps.getSender().isBlank()) {
                 return channelProps.getSender();
@@ -230,8 +229,9 @@ public class PublishResultAspect {
      * to the annotation attribute.
      */
     private boolean resolveAsync(PublishResult annotation, String channelRef) {
-        if (properties != null && !channelRef.isBlank()) {
-            RacerProperties.ChannelProperties channelProps = properties.getChannels().get(channelRef);
+        RacerProperties props = this.properties;
+        if (props != null && !channelRef.isBlank()) {
+            RacerProperties.ChannelProperties channelProps = props.getChannels().get(channelRef);
             if (channelProps != null) {
                 return channelProps.isAsync();
             }
@@ -274,7 +274,8 @@ public class PublishResultAspect {
         }
         if (priorityLevel != null && priorityPublisher != null) {
             String level = resolvePriorityLevel(value, priorityLevel);
-            return priorityPublisher.publish(channel, value, sender, level)
+            var pp = priorityPublisher;
+            return pp.publish(channel, value, sender, level)
                     .doOnSuccess(count -> log.debug("[racer] @PublishResult+priority(concurrent) → '{}:priority:{}' ({} subscriber(s))", channel, level, count))
                     .doOnError(err -> log.error("[racer] @PublishResult+priority(concurrent) failed to '{}:priority:{}': {}", channel, level, err.getMessage()))
                     .then();
@@ -310,7 +311,8 @@ public class PublishResultAspect {
         // ── Priority Pub/Sub path ──────────────────────────────────────────
         if (priorityLevel != null && priorityPublisher != null) {
             String level = resolvePriorityLevel(value, priorityLevel);
-            Mono<Long> publish = priorityPublisher.publish(channel, value, sender, level);
+            var pp = priorityPublisher;
+            Mono<Long> publish = pp.publish(channel, value, sender, level);
             if (async) {
                 publish.subscribe(
                         count -> log.debug("[racer] @PublishResult+priority → '{}:priority:{}' ({} subscriber(s))", channel, level, count),

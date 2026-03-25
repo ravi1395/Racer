@@ -44,7 +44,7 @@ class RacerAdminControllerTest {
         lenient().when(publisherRegistry.getAll()).thenReturn(Map.of("orders", pub));
 
         // null for optional beans (rate limiter + circuit breaker)
-        controller = new RacerAdminController(publisherRegistry, properties, null, null);
+        controller = new RacerAdminController(publisherRegistry, properties, null);
     }
 
     // ── /overview ────────────────────────────────────────────────────────────
@@ -101,7 +101,7 @@ class RacerAdminControllerTest {
         RacerCircuitBreakerRegistry cbRegistry = mock(RacerCircuitBreakerRegistry.class);
         when(cbRegistry.getAll()).thenReturn(java.util.List.of());
 
-        RacerAdminController ctrl = new RacerAdminController(publisherRegistry, properties, cbRegistry, null);
+        RacerAdminController ctrl = new RacerAdminController(publisherRegistry, properties, cbRegistry);
 
         StepVerifier.create(ctrl.circuitBreakers())
                 .assertNext(body -> assertThat(body.get("enabled")).isEqualTo(true))

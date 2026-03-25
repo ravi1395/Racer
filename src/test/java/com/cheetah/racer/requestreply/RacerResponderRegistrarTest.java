@@ -78,7 +78,7 @@ class RacerResponderRegistrarTest {
         when(streamOps.createGroup(anyString(), any(), anyString())).thenReturn(Mono.just("OK"));
 
         registrar = new RacerResponderRegistrar(
-                listenerContainer, redisTemplate, objectMapper, properties, null);
+                listenerContainer, redisTemplate, objectMapper, properties);
         registrar.setEnvironment(environment);
     }
 

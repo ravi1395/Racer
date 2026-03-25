@@ -85,8 +85,6 @@ public class RacerRateLimiter {
 
     private final ReactiveRedisTemplate<String, String> redisTemplate;
     private final DefaultRedisScript<Long> script;
-    private final long defaultCapacity;
-    private final long defaultRefillRate;
     private final String keyPrefix;
 
     /**
@@ -102,8 +100,6 @@ public class RacerRateLimiter {
                              long defaultCapacity, long defaultRefillRate, String keyPrefix,
                              java.util.Map<String, com.cheetah.racer.config.RacerProperties.RateLimitProperties.ChannelRateLimitProperties> channels) {
         this.redisTemplate    = redisTemplate;
-        this.defaultCapacity  = defaultCapacity;
-        this.defaultRefillRate = defaultRefillRate;
         this.keyPrefix        = keyPrefix;
         this.defaultLimits    = new long[]{defaultCapacity, defaultRefillRate};
 

@@ -1,6 +1,5 @@
 package com.cheetah.racer.health;
 
-import com.cheetah.racer.config.RacerProperties;
 import com.cheetah.racer.service.DeadLetterQueueService;
 import com.cheetah.racer.stream.RacerConsumerLagMonitor;
 import org.junit.jupiter.api.BeforeEach;
@@ -10,7 +9,6 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
-import org.springframework.boot.actuate.health.Health;
 import org.springframework.boot.actuate.health.Status;
 import org.springframework.data.redis.connection.ReactiveRedisConnection;
 import org.springframework.data.redis.connection.ReactiveRedisConnectionFactory;

@@ -91,7 +91,6 @@ class RacerTracingInterceptorTest {
         // contextWrite propagates context upstream so outer operators can read it.
         // We verify by subscribing with a context and reading the key from within
         // a deferContextual that the interceptor's contextWrite populated.
-        var ref = new String[]{null};
         interceptor.intercept(message, CTX)
                 .doOnNext(msg -> { /* subscription triggers contextWrite */ })
                 .contextWrite(ctx -> ctx) // no-op — just keeps the chain reactive

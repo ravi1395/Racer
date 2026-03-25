@@ -8,6 +8,7 @@ import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
+import org.springframework.lang.NonNull;
 import org.springframework.util.ReflectionUtils;
 
 /**
@@ -26,12 +27,12 @@ public class RacerPublisherFieldProcessor implements BeanPostProcessor, Applicat
     private ApplicationContext applicationContext;
 
     @Override
-    public void setApplicationContext(ApplicationContext ctx) throws BeansException {
+    public void setApplicationContext(@NonNull ApplicationContext ctx) throws BeansException {
         this.applicationContext = ctx;
     }
 
     @Override
-    public Object postProcessBeforeInitialization(Object bean, String beanName) throws BeansException {
+    public Object postProcessBeforeInitialization(@NonNull Object bean, @NonNull String beanName) throws BeansException {
         ReflectionUtils.doWithFields(
                 bean.getClass(),
                 field -> {

@@ -91,6 +91,9 @@ public class RacerHealthIndicator implements ReactiveHealthIndicator {
     }
 
     private Mono<Health> enrichWithDlqDepth(Health redisHealth) {
+        if (dlqService == null) {
+            return Mono.just(redisHealth);
+        }
         return dlqService.size()
                 .map(depth -> {
                     Health.Builder builder = Health.status(redisHealth.getStatus());

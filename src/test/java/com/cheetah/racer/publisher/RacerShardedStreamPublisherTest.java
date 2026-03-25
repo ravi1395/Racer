@@ -153,18 +153,21 @@ class RacerShardedStreamPublisherTest {
 
     // ── shardFor (deprecated CRC-16 method) ───────────────────────────────────
 
+    @SuppressWarnings("deprecation")
     @Test
     void shardFor_nullKey_returnsZero() {
         RacerShardedStreamPublisher publisher = new RacerShardedStreamPublisher(delegate, 4);
         assertThat(publisher.shardFor(null)).isZero();
     }
 
+    @SuppressWarnings("deprecation")
     @Test
     void shardFor_emptyKey_returnsZero() {
         RacerShardedStreamPublisher publisher = new RacerShardedStreamPublisher(delegate, 4);
         assertThat(publisher.shardFor("")).isZero();
     }
 
+    @SuppressWarnings("deprecation")
     @Test
     void shardFor_deterministic_sameKeyAlwaysSameShard() {
         RacerShardedStreamPublisher publisher = new RacerShardedStreamPublisher(delegate, 8);
@@ -178,6 +181,7 @@ class RacerShardedStreamPublisherTest {
 
     // ── crc16 verification ────────────────────────────────────────────────────
 
+    @SuppressWarnings("deprecation")
     @Test
     void crc16_matchesRedisClusterSlot() {
         // Verify known CRC-16/CCITT behavior: the shardFor method uses CRC-16 mod N.

@@ -105,7 +105,7 @@ class RacerSchemaRegistryTest {
         }
 
         assertThat(ex).isNotNull();
-        assertThat(ex.getViolations()).isNotEmpty();
+        assertThat(ex.getViolations()).isNotEmpty();  // safe: ex is checked non-null above
         assertThat(ex.getChannel()).isEqualTo(CHANNEL);
     }
 

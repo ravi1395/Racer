@@ -17,6 +17,7 @@ import org.springframework.data.redis.connection.stream.*;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.data.redis.listener.PatternTopic;
 import org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;
+import org.springframework.lang.NonNull;
 import org.springframework.lang.Nullable;
 import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
@@ -95,7 +96,7 @@ public class RacerClientFactoryBean<T> implements FactoryBean<T>, EnvironmentAwa
     }
 
     @Override
-    public void setEnvironment(Environment environment) {
+    public void setEnvironment(@NonNull Environment environment) {
         this.environment = environment;
     }
 
@@ -120,7 +121,6 @@ public class RacerClientFactoryBean<T> implements FactoryBean<T>, EnvironmentAwa
                 });
     }
 
-    @SuppressWarnings("unchecked")
     private Object invokeRequestReply(Method method, RacerRequestReply ann, Object[] args) {
         Duration timeout = parseDuration(resolve(ann.timeout()), Duration.ofSeconds(5));
         boolean isStream = !ann.stream().isEmpty() || !ann.streamRef().isEmpty();
@@ -217,7 +217,6 @@ public class RacerClientFactoryBean<T> implements FactoryBean<T>, EnvironmentAwa
         long maxAttempts = timeout.toMillis() / 200;
 
         return Mono.defer(() -> {
-            @SuppressWarnings("unchecked")
             Mono<RacerReply> one = (Mono<RacerReply>) redisTemplate
                     .opsForStream()
                     .read(StreamOffset.fromStart(responseStreamKey))
@@ -252,7 +251,6 @@ public class RacerClientFactoryBean<T> implements FactoryBean<T>, EnvironmentAwa
         try { return objectMapper.writeValueAsString(args); } catch (Exception e) { return java.util.Arrays.toString(args); }
     }
 
-    @SuppressWarnings("unchecked")
     private Object deserializePayload(String payload, java.lang.reflect.Type targetType) {
         if (payload == null || payload.isBlank()) return null;
         if (targetType instanceof Class<?> cls) {
