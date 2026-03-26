@@ -77,6 +77,7 @@ public class RacerPriorityPublisher {
      * @param priorityLevel   priority level name (e.g. {@code "HIGH"}, {@code "NORMAL"}, {@code "LOW"})
      * @return Mono of the subscriber count
      */
+    @SuppressWarnings("null")
     public Mono<Long> publish(String baseChannelName, Object payload,
                                String sender, String priorityLevel) {
         Mono<Void> validate = schemaRegistry != null

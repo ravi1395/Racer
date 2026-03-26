@@ -127,6 +127,7 @@ public class RacerChannelPublisherImpl implements RacerChannelPublisher {
     }
 
     @Override
+    @SuppressWarnings("null")
     public Mono<Long> publishAsync(Object payload, String sender) {
         Mono<Void> rateLimitCheck = rateLimiter != null
                 ? rateLimiter.checkLimit(channelAlias)
@@ -159,6 +160,7 @@ public class RacerChannelPublisherImpl implements RacerChannelPublisher {
     }
 
     @Override
+    @SuppressWarnings("null")
     public Mono<Long> publishAsync(Object payload, String sender, String messageId) {
         Mono<Void> rateLimitCheck = rateLimiter != null
                 ? rateLimiter.checkLimit(channelAlias)
@@ -191,6 +193,7 @@ public class RacerChannelPublisherImpl implements RacerChannelPublisher {
     }
 
     @Override
+    @SuppressWarnings("null")
     public Mono<Long> publishRoutedAsync(Object payload, String sender) {
         Mono<Void> rateLimitCheck = rateLimiter != null
                 ? rateLimiter.checkLimit(channelAlias)

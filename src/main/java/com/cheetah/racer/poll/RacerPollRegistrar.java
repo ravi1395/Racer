@@ -212,6 +212,7 @@ public class RacerPollRegistrar implements BeanPostProcessor, EnvironmentAware {
          * @param lastFired per-poller reference tracking the last second that fired;
          *                  updated atomically on a successful match
          */
+        @SuppressWarnings("null")
         static boolean matchesOnce(String cron, AtomicReference<LocalDateTime> lastFired) {
             try {
                 org.springframework.scheduling.support.CronExpression expr =
@@ -236,6 +237,7 @@ public class RacerPollRegistrar implements BeanPostProcessor, EnvironmentAware {
 
         /** @deprecated use {@link #matchesOnce(String, AtomicReference)} to avoid duplicate fires */
         @Deprecated
+        @SuppressWarnings("null")
         static boolean matches(String cron) {
             try {
                 org.springframework.scheduling.support.CronExpression expr =

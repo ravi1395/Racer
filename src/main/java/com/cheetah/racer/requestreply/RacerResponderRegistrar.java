@@ -153,6 +153,7 @@ public class RacerResponderRegistrar implements BeanPostProcessor, EnvironmentAw
 
         log.info("[RACER-RESPONDER] Registering Pub/Sub responder '{}' <- channel '{}'", responderId, channel);
 
+        @SuppressWarnings("null")
         Disposable sub = container
                 .receive(ChannelTopic.of(channel))
                 .flatMap(
@@ -186,6 +187,7 @@ public class RacerResponderRegistrar implements BeanPostProcessor, EnvironmentAw
         });
     }
 
+    @SuppressWarnings("null")
     private Mono<Void> publishPubSubReply(String replyChannel, RacerReply reply) {
         try {
             String json = objectMapper.writeValueAsString(reply);
@@ -229,7 +231,7 @@ public class RacerResponderRegistrar implements BeanPostProcessor, EnvironmentAw
                         log.error("[RACER-RESPONDER] Poll error on '{}': {}", streamKey, ex.getMessage()));
     }
 
-    @SuppressWarnings("unchecked")
+    @SuppressWarnings({"unchecked", "null"})
     private Flux<Void> pollStreamOnce(Object bean, Method method,
                                        String streamKey, String group, String consumer, String responderId) {
         StreamReadOptions opts = StreamReadOptions.empty().count(1);
@@ -271,6 +273,7 @@ public class RacerResponderRegistrar implements BeanPostProcessor, EnvironmentAw
                 .doOnError(ex -> log.error("[RACER-RESPONDER] Stream record {} processing failed: {}", recordId, ex.getMessage()));
     }
 
+    @SuppressWarnings("null")
     private Mono<Void> writeStreamReply(String responseStreamKey, RacerReply reply) {
         try {
             String json = objectMapper.writeValueAsString(reply);
@@ -300,7 +303,8 @@ public class RacerResponderRegistrar implements BeanPostProcessor, EnvironmentAw
                 .fromCallable(() -> isNoArg ? method.invoke(bean) : method.invoke(bean, resolvedArg))
                 .subscribeOn(Schedulers.boundedElastic());
 
-        return invocation
+        @SuppressWarnings({"unchecked", "null"})
+        Mono<RacerReply> result0 = invocation
                 .flatMap(result -> {
                     if (result instanceof Mono<?> mono) return (Mono<Object>) mono;
                     return Mono.justOrEmpty(result);
@@ -322,6 +326,7 @@ public class RacerResponderRegistrar implements BeanPostProcessor, EnvironmentAw
                             responderId, request.getCorrelationId(), cause.getMessage(), cause);
                     return Mono.just(RacerReply.failure(request.getCorrelationId(), cause.getMessage(), responderId));
                 });
+        return result0;
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

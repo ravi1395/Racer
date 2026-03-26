@@ -272,7 +272,7 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
                         log.error("[RACER-STREAM-LISTENER] Poll error on '{}': {}", streamKey, ex.getMessage()));
     }
 
-    @SuppressWarnings("unchecked")
+    @SuppressWarnings({"unchecked", "null"})
     private Flux<Void> pollOnce(Object bean, Method method,
                                 String streamKey, String group, String consumer,
                                 int batchSize, String listenerId, boolean dedupEnabled) {

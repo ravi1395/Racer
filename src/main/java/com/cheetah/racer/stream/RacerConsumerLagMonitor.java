@@ -117,6 +117,7 @@ public class RacerConsumerLagMonitor {
                 });
     }
 
+    @SuppressWarnings("null")
     private Mono<Void> scrapeOne(String streamKey, String group, AtomicLong counter) {
         return redisTemplate.opsForStream()
                 .pending(streamKey, group)

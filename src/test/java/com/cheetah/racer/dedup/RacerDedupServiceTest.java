@@ -23,6 +23,7 @@ import static org.mockito.Mockito.when;
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
+@SuppressWarnings("null")
 class RacerDedupServiceTest {
 
     @Mock ReactiveRedisTemplate<String, String> redisTemplate;

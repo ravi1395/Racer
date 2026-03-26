@@ -98,6 +98,7 @@ public class DlqReprocessorService {
                 });
     }
 
+    @SuppressWarnings("null")
     private Mono<Long> republishMessage(DeadLetterMessage dlm) {
         RacerMessage message = dlm.getOriginalMessage();
         message.setRetryCount(message.getRetryCount() + 1);
