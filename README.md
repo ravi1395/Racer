@@ -72,6 +72,7 @@ A Spring Boot library for annotation-driven reactive Redis messaging. Define pub
     - [Advantages of Racer](#advantages-of-racer)
     - [Disadvantages & Mitigations](#disadvantages--mitigations)
     - [When to Use What](#when-to-use-what)
+    - [Using Racer with Kafka](#using-racer-with-kafka)
 22. [Roadmap & Implementation Status](#roadmap--implementation-status)
 23. [Tutorials](TUTORIALS.md) *(separate file)*
 
@@ -2392,6 +2393,58 @@ This section explains how it compares architecturally to dedicated message broke
 │  ✓ You need XA transactions (two-phase commit with a database)              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+### Using Racer with Kafka
+
+Racer and Kafka are **complementary**, not mutually exclusive. Kafka typically owns the canonical, durable event log between services; Racer handles the low-latency, in-cluster fan-out layer on top of it. Because Racer is a library (not a broker), adding it alongside an existing Kafka deployment requires no extra infrastructure — only the Redis instance your services likely already run.
+
+**Common integration patterns:**
+
+#### Kafka → Racer fan-out
+
+A Kafka consumer receives events from an upstream topic and republishes them internally via Racer, enabling sub-millisecond delivery to in-process or same-cluster consumers (e.g. live dashboards, cache invalidation).
+
+```java
+@KafkaListener(topics = "orders")
+public void onOrder(OrderEvent event) {
+    racerPublisher.publishAsync(objectMapper.writeValueAsString(event), "order-service");
+}
+```
+
+#### Racer for request-reply, Kafka for async events
+
+Use `@RacerClient` / `@RacerResponder` for synchronous-style RPC between services that share Redis (e.g. enrichment lookups, auth checks). Keep the broader event stream — where no reply is needed — on Kafka.
+
+```java
+// Caller — resolves enrichment synchronously over Redis
+@RacerClient
+interface EnrichmentClient {
+    @RacerRequestReply(channelRef = "enrich")
+    Mono<EnrichedOrder> enrich(Order order);
+}
+
+// Meanwhile, the enriched result is also published to Kafka for downstream consumers
+@KafkaTemplate
+kafkaTemplate.send("enriched-orders", result);
+```
+
+#### Racer as a Kafka consumer work-distributor
+
+When a Kafka consumer pulls a batch of work, use `RacerShardedStreamPublisher` to distribute items across Redis Stream shards, then scale out workers with `@RacerStreamListener(concurrency = N)`.
+
+```java
+@KafkaListener(topics = "jobs")
+public void onJob(JobEvent job) {
+    shardedPublisher.publish(job.getId(), objectMapper.writeValueAsString(job), "job-service");
+}
+
+@RacerStreamListener(channelRef = "jobs", concurrency = 4)
+public void processJob(RacerMessage msg) { /* ... */ }
+```
+
+**Boundary to maintain:** Racer has no offset replay — never use it as the canonical event log. Keep that in Kafka. Racer owns the real-time, low-latency layer built on top of it.
 
 ---
 
