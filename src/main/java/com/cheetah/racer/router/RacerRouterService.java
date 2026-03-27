@@ -171,7 +171,11 @@ public class RacerRouterService {
      *
      * @return {@link RouteDecision#PASS} if no rule matched; otherwise the decision
      *         determined by the first matching rule
+     * @deprecated Use {@link #routeReactive(RacerMessage)} for full error propagation.
+     *             This synchronous path uses fire-and-forget publishing (M-4): routing
+     *             failures are logged and metered but cannot be propagated to the caller.
      */
+    @Deprecated(since = "1.3.0", forRemoval = false)
     public RouteDecision route(RacerMessage message) {
         // Cycle prevention: skip routing for messages already forwarded by a routing rule
         if (message.isRouted()) {
@@ -205,7 +209,9 @@ public class RacerRouterService {
      * @param message the incoming message
      * @param rules   ordered list of compiled rules to evaluate
      * @return the first matching rule's decision, or {@link RouteDecision#PASS}
+     * @deprecated Use {@link #evaluateReactive(RacerMessage, List)} for full error propagation.
      */
+    @Deprecated(since = "1.3.0", forRemoval = false)
     public RouteDecision evaluate(RacerMessage message, List<CompiledRouteRule> rules) {
         if (rules.isEmpty()) return RouteDecision.PASS;
 
@@ -373,6 +379,18 @@ public class RacerRouterService {
         // Errors propagate to the caller — RacerListenerRegistrar will send to DLQ
     }
 
+    /**
+     * Synchronous (fire-and-forget) routing action — used only by the legacy synchronous
+     * {@link #route(RacerMessage)} / {@link #evaluate(RacerMessage, List)} path.
+     *
+     * <p><b>Known limitation (M-4):</b> because this method must return a {@link RouteDecision}
+     * synchronously, the publish is submitted as a background subscribe and the decision is
+     * returned optimistically.  A Redis failure will be logged and metered but cannot be
+     * propagated back to the caller, so the caller may receive {@code FORWARDED} even when
+     * the actual delivery failed.  Use {@link #routeReactive(RacerMessage)} to get full
+     * error propagation into your reactive pipeline.
+     */
+    @Deprecated(since = "1.3.0", forRemoval = false)
     private RouteDecision applyAction(RacerMessage message, CompiledRouteRule rule) {
         if (rule.action() == RouteAction.DROP)         return RouteDecision.DROPPED;
         if (rule.action() == RouteAction.DROP_TO_DLQ) return RouteDecision.DROPPED_TO_DLQ;
@@ -380,22 +398,27 @@ public class RacerRouterService {
         // FORWARD or FORWARD_AND_PROCESS — publish to target alias
         RacerChannelPublisher publisher = registry.getPublisher(rule.alias());
         String sender = rule.sender().isBlank() ? message.getSender() : rule.sender();
+        RouteAction action = rule.action();
 
+        // Fire-and-forget: success/failure is observable only via logs and metrics.
+        // The success log is inside the subscribe callback so it is not printed before
+        // the publish has actually succeeded.
         publisher.publishRoutedAsync(message.getPayload(), sender)
                 .subscribe(
-                        count -> log.debug("[racer-router] message id={} → '{}' ({} subscriber(s))",
-                                message.getId(), rule.alias(), count),
+                        count -> {
+                            log.debug("[racer-router] message id={} \u2192 '{}' ({} subscriber(s))",
+                                    message.getId(), rule.alias(), count);
+                            log.info("[racer-router] Forwarded message id={} \u2192 alias='{}' action={}",
+                                    message.getId(), rule.alias(), action);
+                        },
                         ex -> {
                             racerMetrics.recordFailed(rule.alias(), ex.getClass().getSimpleName());
-                            log.error("[racer-router] Routing failed for message id={}: {}",
-                                    message.getId(), ex.getMessage());
+                            log.error("[racer-router] Routing failed for message id={} \u2192 '{}': {}",
+                                    message.getId(), rule.alias(), ex.getMessage());
                         }
                 );
 
-        log.info("[racer-router] Forwarded message id={} → alias='{}' action={}",
-                message.getId(), rule.alias(), rule.action());
-
-        return rule.action() == RouteAction.FORWARD_AND_PROCESS
+        return action == RouteAction.FORWARD_AND_PROCESS
                 ? RouteDecision.FORWARDED_AND_PROCESS
                 : RouteDecision.FORWARDED;
     }

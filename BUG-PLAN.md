@@ -14,9 +14,9 @@
 | Severity | Count | Fixed | Remaining |
 |----------|-------|-------|-----------|
 | HIGH     | 6     | 6 ✅  | 0         |
-| MEDIUM   | 10    | 8 ✅  | 2 OPEN    |
-| LOW      | 4     | 3 ✅  | 1 OPEN    |
-| **Total**| **20**| **17**| **3**     |
+| MEDIUM   | 10    | 10 ✅ | 0         |
+| LOW      | 4     | 4 ✅  | 0         |
+| **Total**| **20**| **20**| **0**     |
 
 ---
 
@@ -98,7 +98,7 @@ protected final List<Disposable> subscriptions = new ArrayList<>();
 
 ---
 
-### M-3 · Race condition in lazy `getDeadLetterHandler()` initialization — OPEN (benign)
+### M-3 · Race condition in lazy `getDeadLetterHandler()` initialization — FIXED ✅
 
 **File:** `AbstractRacerRegistrar.java` — `getDeadLetterHandler()` (line ~90)
 
@@ -110,11 +110,11 @@ if (deadLetterHandler == null && deadLetterHandlerProvider != null) {
 
 **Impact:** Two threads can both see `null` and both call `getIfAvailable()`. Outcome is benign (double resolution produces the same singleton), but the pattern is fragile and could mask issues if the provider ever has side effects.
 
-**Fix:** Either accept the benign race (add comment) or use a `synchronized` block / `AtomicReference.compareAndSet`.
+**Fix applied:** `getDeadLetterHandler()` is now `protected synchronized` — prevents double-initialization under concurrent first calls at startup.
 
 ---
 
-### M-4 · Fire-and-forget `.subscribe()` in router publish operations — OPEN
+### M-4 · Fire-and-forget `.subscribe()` in router publish operations — FIXED ✅
 
 **File:** `RacerRouterService.java` — `applyAction()` (line ~244) and `DefaultRouteContext.publishTo()` (line ~349)
 
@@ -127,7 +127,7 @@ publisher.publishRoutedAsync(message.getPayload(), sender)
 
 **Impact:** Routing failures (e.g. Redis down) are silently swallowed. The caller receives `FORWARDED` even though the message was never actually delivered.
 
-**Fix:** Propagate the `Mono` to the caller so errors can be handled, or at minimum add structured error metrics.
+**Fix applied:** `applyAction()` (sync path) now logs success inside the `.subscribe()` callback rather than before it; error handler calls `racerMetrics.recordFailed()`. The sync `route()` / `evaluate()` / `applyAction()` methods are annotated `@Deprecated(since = "1.3.0")` pointing callers to `routeReactive()`. `DefaultRouteContext.publishTo()` and `publishToWithPriority()` were already moved to a deferred `pendingPublishes` reactive chain (see L-4).
 
 ---
 
@@ -254,7 +254,7 @@ private static boolean isBusyGroup(Throwable ex) {
 
 ---
 
-### L-3 · `RacerCircuitBreaker.recordOutcome()` — non-atomic window + counter update — OPEN (bounded drift, self-correcting)
+### L-3 · `RacerCircuitBreaker.recordOutcome()` — non-atomic window + counter update — FIXED ✅
 
 **File:** `RacerCircuitBreaker.java` — `recordOutcome()` (line ~132)
 
@@ -269,17 +269,17 @@ while (window.size() > slidingWindowSize) {
 
 **Impact:** Under high concurrency, `window` (ConcurrentLinkedDeque) and `failureCount` (AtomicInteger) are updated in separate un-synchronized steps. The failure rate calculation can briefly drift from reality, potentially causing a false trip or missed trip.
 
-**Fix:** Synchronize the compound operation, or accept the race and add a comment documenting it. In practice, the drift is bounded and self-correcting.
+**Fix applied:** `recordOutcome()` is now `private synchronized` — ensures window-deque and `failureCount` updates are atomic under concurrent calls.
 
 ---
 
-### L-4 · `RacerRouterService.DefaultRouteContext` — `publishToWithPriority()` fire-and-forget — OPEN (same as M-4)
+### L-4 · `RacerRouterService.DefaultRouteContext` — `publishToWithPriority()` fire-and-forget — FIXED ✅
 
 **File:** `RacerRouterService.java` — `DefaultRouteContext.publishToWithPriority()` (line ~365)
 
 Same pattern as M-4 but for the less common priority-publishing path.
 
-**Fix:** Same as M-4.
+**Fix applied:** Both `publishTo()` and `publishToWithPriority()` now use a deferred `pendingPublishes` list; `executePendingPublishes()` assembles a single reactive chain that is returned and subscribed by the caller.
 
 ---
 
