@@ -112,8 +112,7 @@ public final class RacerFunctionalRouter {
         Builder(String name) { this.name = name; }
 
         /**
-         * Assigns a descriptive name to this router, visible in logs and
-         * {@code GET /api/router/rules}.
+         * Assigns a descriptive name to this router, visible in logs.
          */
         public Builder name(String name) {
             this.name = name;

@@ -205,7 +205,6 @@ public class RacerSchemaRegistry {
 
     /**
      * Ad-hoc validation — returns violations without throwing.
-     * Used by the {@code POST /api/schema/validate} endpoint.
      */
     public List<SchemaViolation> validateAdHoc(String channelKey, Object payload) {
         JsonSchema schema = schemaMap.get(channelKey);

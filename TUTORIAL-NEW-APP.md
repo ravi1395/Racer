@@ -46,7 +46,6 @@ By the end you will have a running service that:
 | 17 | Message deduplication | `racer.dedup.*` + `EmailWorker` |
 | 18 | Durable delivery (Streams) | `racer.channels.email.durable=true` |
 | 19 | Actuator metrics | `/actuator/metrics` |
-| 20 | Built-in web API | `racer.web.dlq-enabled=true` |
 
 ---
 
@@ -167,7 +166,7 @@ cd notify-hub
           reactive Redis (Lettuce), Jackson, and Micrometer integration.
         -->
         <dependency>
-            <groupId>com.cheetah</groupId>
+            <groupId>io.github.ravi1395</groupId>
             <artifactId>racer</artifactId>
             <version>1.3.0</version>
         </dependency>
@@ -323,10 +322,6 @@ racer.backpressure.enabled=true
 racer.backpressure.queue-threshold=0.80
 racer.backpressure.check-interval-ms=2000
 
-# ── Racer: built-in web endpoints ────────────────────────────────────────────
-racer.web.dlq-enabled=true          # exposes GET/POST /api/dlq/**
-racer.web.channels-enabled=true     # exposes GET /api/channels
-
 # ── Actuator ─────────────────────────────────────────────────────────────────
 management.endpoints.web.exposure.include=health,info,metrics,prometheus
 management.endpoint.health.show-details=always
@@ -334,7 +329,7 @@ management.endpoint.health.show-details=always
 
 > **One file, all features.** Each section maps to a Racer `@ConfigurationProperties`
 > class: `RacerProperties.DedupProperties`, `CircuitBreakerProperties`,
-> `PriorityProperties`, `BackPressureProperties`, `WebProperties`, and so on.
+> `PriorityProperties`, `BackPressureProperties`, and so on.
 
 ---
 
@@ -1117,8 +1112,7 @@ import reactor.core.publisher.Mono;
  * Custom DLQ REST API that shows how to use DeadLetterQueueService and
  * DlqReprocessorService programmatically.
  *
- * Note: racer.web.dlq-enabled=true already exposes /api/dlq/** from Racer.
- * This controller at /api/notify/dlq demonstrates the same API wired directly.
+ * This controller at /api/notify/dlq demonstrates how to use these services programmatically.
  */
 @RestController
 @RequestMapping("/api/notify/dlq")
@@ -1603,7 +1597,6 @@ Inspect the DLQ:
 
 ```bash
 curl -s http://localhost:8090/api/notify/dlq | jq
-curl -s http://localhost:8090/api/dlq | jq          # built-in Racer endpoint
 curl -s http://localhost:8090/api/notify/dlq/size
 ```
 
@@ -1810,13 +1803,12 @@ NotifyController
 | `@RacerListener` + exception | `SmsWorker` | Automatic DLQ forwarding on failure |
 | `@RacerClient` + `@RacerRequestReply` | `NotificationStatusClient` | Non-blocking request-reply caller |
 | `@RacerResponder` | `StatusResponder` | Request-reply handler |
-| `DeadLetterQueueService` | `DlqApiController` | Inspect DLQ entries |
-| `DlqReprocessorService` | `DlqApiController` | Re-publish DLQ entries to original channel |
+| `DeadLetterQueueService` | `DlqApiController` | Inspect DLQ entries programmatically |
+| `DlqReprocessorService` | `DlqApiController` | Re-publish DLQ entries to original channel programmatically |
 | `racer.circuit-breaker.*` | `application.properties` | Circuit breaker wrapping SmsWorker |
 | `racer.dedup.*` | `application.properties` | Idempotency window for EmailWorker |
 | `racer.priority.*` | `application.properties` | Priority sub-channels for push and sms |
 | `racer.channels.email.durable=true` | `application.properties` | Switch email to Redis Streams |
-| `racer.web.dlq-enabled=true` | `application.properties` | Enable built-in DLQ web API |
 | Actuator `/metrics` | auto-configured | `racer.messages.published`, `racer.listener.*`, `racer.dedup.*`, `racer.dlq.size` |
 
 ---
@@ -1826,17 +1818,16 @@ NotifyController
 This tutorial demonstrates every annotation and API available in a single-application
 scope. A few advanced topics have dedicated tutorials:
 
-| Topic | Tutorial |
+| Topic | Notes |
 |---|---|
-| Two-way request-reply over Redis Streams | [Tutorial 6](TUTORIALS.md#tutorial-6--two-way-request-reply-over-redis-streams) |
-| Multiple consumer instances per stream | [Tutorial 16](TUTORIALS.md#tutorial-16--consumer-scaling--stream-sharding) |
-| Stream sharding for very-high-throughput channels | [Tutorial 16](TUTORIALS.md#tutorial-16--consumer-scaling--stream-sharding) |
-| JSON Schema validation on publish / consume | (Tutorial — Schema Registry) |
-| Prometheus + Grafana dashboard setup | [Tutorial 12](TUTORIALS.md#tutorial-12--metrics--observability-actuator--prometheus) |
-| DLQ pruning by age (RacerRetentionService) | [Tutorial 13](TUTORIALS.md#tutorial-13--retention--dlq-pruning) |
-| Pipelined batch publish for maximum throughput | [Tutorial 17](TUTORIALS.md#tutorial-17--pipelined-batch-publishing) |
-| High availability with Redis Sentinel / Cluster | [Tutorial 15](TUTORIALS.md#tutorial-15--high-availability-sentinel--cluster) |
-| Consumer group lag dashboard | [Tutorial 24](TUTORIALS.md#tutorial-24--consumer-group-lag-dashboard) |
+| Two-way request-reply over Redis Streams | Use `@RacerClient` + `@RacerRequestReply` / `@RacerResponder` annotations |
+| Multiple consumer instances per stream | Set `concurrency=N` on `@RacerStreamListener` |
+| Stream sharding for very-high-throughput channels | Enable `racer.sharding.enabled=true` with `RacerShardedStreamPublisher` |
+| JSON Schema validation on publish / consume | Enable `racer.schema.enabled=true`; register schemas via `RacerSchemaRegistry` |
+| Prometheus + Grafana dashboard setup | Add `micrometer-registry-prometheus` and expose `/actuator/prometheus` |
+| DLQ pruning by age | Configure `racer.retention.*` properties for `RacerRetentionService` |
+| Pipelined batch publish for maximum throughput | Enable `racer.pipeline.enabled=true` and use `RacerPipelinedPublisher` |
+| High availability with Redis Sentinel / Cluster | Use `compose.sentinel.yaml` or `compose.cluster.yaml` from the Racer repo |
 
 ---
 

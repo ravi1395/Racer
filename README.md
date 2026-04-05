@@ -6,10 +6,10 @@ A Spring Boot library for annotation-driven reactive Redis messaging. Define pub
 - **Declarative Pub/Sub Consumers** — `@RacerListener` turns any Spring method into a Redis Pub/Sub subscriber with `SEQUENTIAL` or `CONCURRENT` processing, schema validation, router integration, and automatic DLQ on failure
 - **Durable Stream Consumers** — `@RacerStreamListener` registers a Redis Streams consumer group reader directly on any Spring bean method, with configurable concurrency and batch size
 - **Annotation-Driven Request/Reply** — `@RacerResponder` marks any method as a request handler; `@RacerClient` interfaces generate proxy callers that send requests and await typed replies
-- **Dead Letter Queue (DLQ)** — automatic enqueue on failure; opt-in REST API (`racer.web.dlq-enabled=true`) for inspection and republishing
+- **Dead Letter Queue (DLQ)** — automatic enqueue on failure; injectable `DeadLetterQueueService` and `DlqReprocessorService` for inspection and republishing
 - **Multiple Channels** — declare unlimited named channels in `application.properties`
 - **Durable Publishing** — `@PublishResult(durable = true)` writes to Redis Streams for at-least-once delivery
-- **Content-Based Router** — annotation style (`@RacerRoute` / `@RacerRouteRule`) and functional DSL (`RacerFunctionalRouter` builder with `RoutePredicates` / `RouteHandlers`); regex-pattern matching on payload fields, sender, or message ID; native multi-alias fan-out via `multicast`; composable predicates (`.and()`, `.or()`, `.negate()`); `RouteAction` controls FORWARD / FORWARD\_AND\_PROCESS / DROP / DROP\_TO\_DLQ; method-level `@RacerRoute` on `@RacerListener` handlers; `@Routed` boolean parameter injection; `RacerMessageInterceptor` SPI; opt-in REST API (`racer.web.router-enabled=true`)
+- **Content-Based Router** — annotation style (`@RacerRoute` / `@RacerRouteRule`) and functional DSL (`RacerFunctionalRouter` builder with `RoutePredicates` / `RouteHandlers`); regex-pattern matching on payload fields, sender, or message ID; native multi-alias fan-out via `multicast`; composable predicates (`.and()`, `.or()`, `.negate()`); `RouteAction` controls FORWARD / FORWARD\_AND\_PROCESS / DROP / DROP\_TO\_DLQ; method-level `@RacerRoute` on `@RacerListener` handlers; `@Routed` boolean parameter injection; `RacerMessageInterceptor` SPI
 - **Atomic Batch Publish** — `RacerTransaction.execute()` for ordered multi-channel publish
 - **Pipelined Batch Publish** — `RacerPipelinedPublisher` issues all commands in parallel for maximum throughput
 - **Consumer Scaling** — configurable concurrency per stream via `@RacerStreamListener(concurrency=N)` and key-based sharding via `RacerShardedStreamPublisher`
@@ -17,13 +17,11 @@ A Spring Boot library for annotation-driven reactive Redis messaging. Define pub
 - **Message Priority** — `RacerPriorityPublisher` routes messages to `HIGH`/`NORMAL`/`LOW` sub-channels
 - **Distributed Tracing** — W3C `traceparent` propagation via `RacerTraceContext` and `RacerTracingInterceptor`; MDC integration for correlated logging (v1.3)
 - **Per-Channel Rate Limiting** — Redis token-bucket via `RacerRateLimiter`; fail-open on Redis errors; per-channel overrides (v1.3)
-- **Admin UI** — live dashboard at `/racer-admin/` backed by `RacerAdminController`; overview, channel stats, circuit breaker state, and rate limit info (v1.3)
 - **Micrometer Metrics** — Prometheus/Actuator instrumentation for published/consumed/failed/DLQ/latency counters
-- **Retention Service** — scheduled `XTRIM` + DLQ age-based eviction; opt-in REST API (`racer.web.retention-enabled=true`)
+- **Retention Service** — scheduled `XTRIM` + DLQ age-based eviction via `RacerRetentionService`
 - **High Availability** — Sentinel and Cluster Docker Compose topologies included
 
 > **Building a new service?** Follow the **[New App from Scratch →](TUTORIAL-NEW-APP.md)** guide for a complete end-to-end walkthrough.
-> **Want feature-level tutorials?** Browse the **[Tutorials →](TUTORIALS.md)** for step-by-step walkthroughs of every feature.
 
 ---
 
@@ -49,32 +47,24 @@ A Spring Boot library for annotation-driven reactive Redis messaging. Define pub
    - [Multi-channel configuration](#multi-channel-configuration)
 7. [Redis Keys & Channels Reference](#redis-keys--channels-reference)
 8. [Message Schemas](#message-schemas)
-9. [API Reference (port 8080, opt-in)](#api-reference-port-8080-opt-in)
-   - [DLQ APIs](#dlq-apis)
-   - [Retention APIs](#retention-apis)
-   - [Router APIs](#router-apis)
-   - [Channel Registry APIs](#channel-registry-apis)
-   - [Schema APIs](#schema-apis)
-   - [Admin UI APIs](#admin-ui-apis)
-10. [Observability & Metrics](#observability--metrics)
-11. [High Availability](#high-availability)
-12. [Consumer Scaling & Sharding](#consumer-scaling--sharding)
-13. [Pipelined Publishing](#pipelined-publishing)
-14. [Message Priority](#message-priority)
-15. [Cluster-Aware Publishing](#cluster-aware-publishing)
-16. [Distributed Tracing](#distributed-tracing)
-17. [Per-Channel Rate Limiting](#per-channel-rate-limiting)
-18. [End-to-End Flows](#end-to-end-flows)
-19. [Extending the Application](#extending-the-application)
-20. [Error Handling & DLQ Behaviour](#error-handling--dlq-behaviour)
-21. [Comparison with Other Brokers](#comparison-with-other-brokers)
+9. [Observability & Metrics](#observability--metrics)
+10. [High Availability](#high-availability)
+11. [Consumer Scaling & Sharding](#consumer-scaling--sharding)
+12. [Pipelined Publishing](#pipelined-publishing)
+13. [Message Priority](#message-priority)
+14. [Cluster-Aware Publishing](#cluster-aware-publishing)
+15. [Distributed Tracing](#distributed-tracing)
+16. [Per-Channel Rate Limiting](#per-channel-rate-limiting)
+17. [End-to-End Flows](#end-to-end-flows)
+18. [Extending the Application](#extending-the-application)
+19. [Error Handling & DLQ Behaviour](#error-handling--dlq-behaviour)
+20. [Comparison with Other Brokers](#comparison-with-other-brokers)
     - [Architecture at a Glance](#architecture-at-a-glance)
     - [Advantages of Racer](#advantages-of-racer)
     - [Disadvantages & Mitigations](#disadvantages--mitigations)
     - [When to Use What](#when-to-use-what)
     - [Using Racer with Kafka](#using-racer-with-kafka)
-22. [Roadmap & Implementation Status](#roadmap--implementation-status)
-23. [Tutorials](TUTORIALS.md) *(separate file)*
+21. [Roadmap & Implementation Status](#roadmap--implementation-status)
 
 ---
 
@@ -105,14 +95,6 @@ A Spring Boot library for annotation-driven reactive Redis messaging. Define pub
  │  RacerRouterService                → content-based routing                   │
  │  DeadLetterQueueService            → DLQ enqueue on failure                  │
  │  RacerRetentionService             → scheduled XTRIM + DLQ age pruning       │
- │                                                                               │
- │  Opt-in REST APIs (racer.web.*-enabled=true):                                │
- │    /api/dlq/**          racer.web.dlq-enabled=true                           │
- │    /api/retention/**    racer.web.retention-enabled=true                     │
- │    /api/router/**       racer.web.router-enabled=true                        │
- │    GET /api/channels    racer.web.channels-enabled=true                      │
- │    /api/schema/**       racer.web.schema-enabled=true                        │
- │    /api/admin/**        racer.web.admin-enabled=true  (v1.3)                 │
  └───────────────────────────────────────────────────────────────────────────────┘
 
 Metrics: RacerMetrics (Micrometer) wired into all publish/consume/DLQ paths
@@ -121,7 +103,7 @@ Metrics: RacerMetrics (Micrometer) wired into all publish/consume/DLQ paths
 
 | Module | Role | Port |
 |--------|------|----- |
-| `racer` | Library: annotations, models, auto-configuration, web controllers | — |
+| `racer` | Library: annotations, models, auto-configuration | — |
 | `racer-demo` | Standalone demo app combining publisher + consumer + responder + client | 8080 |
 
 ---
@@ -159,7 +141,6 @@ racer/                                   # Library (single-module Maven project)
     │   │   ├── config/
     │   │   │   ├── RedisConfig.java                  # ReactiveRedisTemplate beans
     │   │   │   ├── RacerAutoConfiguration.java        # Wires all beans
-    │   │   │   ├── RacerWebAutoConfiguration.java     # Wires opt-in web controllers
     │   │   │   └── RacerProperties.java               # racer.* property binding
     │   │   ├── listener/
     │   │   │   ├── AbstractRacerRegistrar.java        # Base BeanPostProcessor + SmartLifecycle for listener registrars
@@ -219,19 +200,9 @@ racer/                                   # Library (single-module Maven project)
     │   │   │   └── RacerTransaction.java              # Atomic ordered multi-channel publish
     │   │   ├── util/
     │   │   │   └── RacerChannelResolver.java          # Static utility: resolves channel/stream key from annotation + RacerProperties
-    │   │   └── web/
-    │   │       ├── DlqController.java                 # Conditional on racer.web.dlq-enabled
-    │   │       ├── RetentionController.java           # Conditional on racer.web.retention-enabled
-    │   │       ├── RouterController.java              # Conditional on racer.web.router-enabled
-    │   │       ├── ChannelRegistryController.java     # Conditional on racer.web.channels-enabled
-    │   │       ├── SchemaController.java              # Conditional on racer.web.schema-enabled
-    │   │       └── RacerAdminController.java          # Conditional on racer.web.admin-enabled (v1.3)
     │   └── resources/
-    │       ├── META-INF/spring/
-    │       │   └── org.springframework.boot.autoconfigure.AutoConfiguration.imports
-    │       └── static/
-    │           └── racer-admin/
-    │               └── index.html                         # Bootstrap 5 Admin UI dashboard (v1.3)
+    │       └── META-INF/spring/
+    │           └── org.springframework.boot.autoconfigure.AutoConfiguration.imports
     └── test/java/com/cheetah/racer/
         └── (unit tests)
 
@@ -374,12 +345,6 @@ Started RacerDemoApplication in X.XXX seconds
 | `racer.thread-pool.queue-capacity` | `1000` | Bounded task queue depth for the Racer thread pool |
 | `racer.thread-pool.keep-alive-seconds` | `60` | Idle thread timeout (seconds) above `core-size` |
 | `racer.thread-pool.thread-name-prefix` | `racer-worker-` | Thread name prefix — visible in thread dumps and profilers |
-| `racer.web.dlq-enabled` | `false` | Expose `/api/dlq/**` REST endpoints |
-| `racer.web.retention-enabled` | `false` | Expose `/api/retention/**` REST endpoints |
-| `racer.web.router-enabled` | `false` | Expose `/api/router/**` REST endpoints |
-| `racer.web.channels-enabled` | `false` | Expose `GET /api/channels` REST endpoint |
-| `racer.web.schema-enabled` | `false` | Expose `/api/schema/**` REST endpoints |
-| `racer.web.admin-enabled` | `false` | Expose `/api/admin/**` and serve `/racer-admin/` Admin UI dashboard (v1.3) |
 | `management.endpoints.web.exposure.include` | `health,info` | Actuator endpoints to expose (add `metrics,prometheus`) |
 | `management.metrics.tags.application` | — | Tag all metrics with app name |
 | `logging.level.com.cheetah.racer` | `DEBUG` | Log level |
@@ -714,10 +679,6 @@ public class OrderRouterConfig {
 | `drop()` | Discard and log at DEBUG (`id`, `channel`, truncated payload) | `DROPPED` |
 | `dropQuietly()` | Silently discard with no logging (for health-check pings, etc.) | `DROPPED` |
 | `dropToDlq()` | Route to the Dead Letter Queue (**recommended default route**) | `DROPPED_TO_DLQ` |
-
-**Runtime API:**
-- `GET /api/router/rules` — list all compiled rules with their index, source, field, pattern, target and action.
-- `POST /api/router/test` — dry-run: pass a message body and see which rule (if any) matches.
 
 ---
 
@@ -1122,8 +1083,6 @@ A log line is printed for each registered channel at startup:
 [racer] Channel 'audit'         registered → 'racer:audit'
 ```
 
-All registered channels (and their Redis names) are also queryable at runtime via `GET /api/channels`.
-
 **Published message envelope**
 
 Every `RacerChannelPublisher` wraps the payload in a lightweight JSON envelope before publishing:
@@ -1217,399 +1176,6 @@ Consumer names within group: **`<group>-<index>`** e.g. `orders-group-0`, `order
   "failedAt":        "2026-03-01T10:00:02Z",
   "attemptCount":    1
 }
-```
-
----
-
-## API Reference (port 8080, opt-in)
-
-All REST endpoints are **opt-in** and only exposed when the corresponding property is set to `true` in `application.properties`. Each controller is registered conditionally via `@ConditionalOnProperty`.
-
-| Endpoint group | Enable property | Base path |
-|----------------|-----------------|-----------|
-| DLQ | `racer.web.dlq-enabled=true` | `/api/dlq` |
-| Retention | `racer.web.retention-enabled=true` | `/api/retention` |
-| Router | `racer.web.router-enabled=true` | `/api/router` |
-| Channels | `racer.web.channels-enabled=true` | `/api/channels` |
-| Schema | `racer.web.schema-enabled=true` | `/api/schema` |
-| Admin UI | `racer.web.admin-enabled=true` | `/api/admin` + `/racer-admin/` |
-
----
-
-### DLQ APIs
-
-Base path: `/api/dlq` (requires `racer.web.dlq-enabled=true`)
-
-Messages that cause an unhandled exception in a `@RacerListener`, `@RacerStreamListener`, or `@RacerResponder` method are automatically moved to the Dead Letter Queue (a Redis List, key: `racer:dlq`). The DLQ supports inspection, republishing, and clearing.
-
----
-
-#### `GET /api/dlq/messages`
-
-List all messages currently in the DLQ without removing them.
-
-**Response `200 OK`** — JSON array of `DeadLetterMessage`
-
-```json
-[
-  {
-    "id": "550e8400-...",
-    "originalMessage": {
-      "id":         "550e8400-...",
-      "channel":    "racer:messages",
-      "payload":    "this will cause error",
-      "sender":     "me",
-      "timestamp":  "2026-03-01T10:00:00Z",
-      "retryCount": 1
-    },
-    "errorMessage":  "Simulated processing failure for message: 550e8400-...",
-    "exceptionClass": "java.lang.RuntimeException",
-    "failedAt":       "2026-03-01T10:00:01Z",
-    "attemptCount":   1
-  }
-]
-```
-
-**curl example:**
-```bash
-curl http://localhost:8080/api/dlq/messages
-```
-
----
-
-#### `GET /api/dlq/size`
-
-Returns the number of messages currently in the DLQ.
-
-**Response `200 OK`**
-
-```json
-{
-  "dlqSize": 5
-}
-```
-
-**curl example:**
-```bash
-curl http://localhost:8080/api/dlq/size
-```
-
----
-
-#### `GET /api/dlq/stats`
-
-Returns combined DLQ size and republishing statistics.
-
-**Response `200 OK`**
-
-```json
-{
-  "queueSize":        3,
-  "totalReprocessed": 7,
-  "permanentlyFailed": 1
-}
-```
-
-**curl example:**
-```bash
-curl http://localhost:8080/api/dlq/stats
-```
-
----
-
-#### `POST /api/dlq/republish/one`
-
-**Republish** a single DLQ message back to its original Pub/Sub channel. The message flows through the normal pipeline (`@RacerListener` / `@RacerStreamListener`) again.
-
-- Increments `retryCount` on the original message.
-- If `retryCount > MAX_RETRY_ATTEMPTS (3)`: message is permanently discarded.
-
-**Response `200 OK`**
-
-```json
-{
-  "republished": true,
-  "subscribers": 1
-}
-```
-
-Returns `republished: false` when the queue was empty.
-
-**curl example:**
-```bash
-curl -s -X POST http://localhost:8080/api/dlq/republish/one
-```
-
----
-
-#### `DELETE /api/dlq/clear`
-
-Remove **all messages** from the DLQ permanently. Use with caution.
-
-**Response `200 OK`**
-
-```json
-{
-  "cleared": true
-}
-```
-
-**curl example:**
-```bash
-curl -s -X DELETE http://localhost:8080/api/dlq/clear
-```
-
----
-
-### Retention APIs
-
-Base path: `/api/retention` (requires `racer.web.retention-enabled=true`)
-
----
-
-#### `POST /api/retention/trim`
-
-Trigger an **immediate on-demand retention run**: trims all configured durable streams to `racer.retention.stream-max-len` entries, and prunes DLQ entries older than `racer.retention.dlq-max-age-hours`.
-
-**Response `200 OK`**
-
-```json
-{
-  "status": "trimmed",
-  "timestamp": "2026-03-01T10:00:00Z"
-}
-```
-
-**curl example:**
-```bash
-curl -s -X POST http://localhost:8080/api/retention/trim
-```
-
----
-
-#### `GET /api/retention/config`
-
-Returns the current retention configuration being applied by `RacerRetentionService`.
-
-**Response `200 OK`**
-
-```json
-{
-  "streamMaxLen":     10000,
-  "dlqMaxAgeHours":   72,
-  "scheduleCron":     "0 0 * * * *"
-}
-```
-
-**curl example:**
-```bash
-curl http://localhost:8080/api/retention/config
-```
-
----
-
-### Router APIs
-
-Base path: `/api/router` (requires `racer.web.router-enabled=true`)
-
-Content-based routing is configured via `@RacerRoute` annotations (see [`@RacerRoute — content-based routing`](#racerroute--content-based-routing)). These endpoints let you inspect and test the compiled rules at runtime.
-
----
-
-#### `GET /api/router/rules`
-
-Returns all compiled routing rules registered from `@RacerRoute` beans.
-
-**Response `200 OK`**
-
-```json
-[
-  { "index": 0, "field": "type",   "pattern": "^ORDER.*",        "to": "racer:orders" },
-  { "index": 1, "field": "type",   "pattern": "^NOTIFICATION.*", "to": "racer:notifications" },
-  { "index": 2, "field": "sender", "pattern": "payment-service", "to": "racer:payments" }
-]
-```
-
-**curl example:**
-```bash
-curl http://localhost:8080/api/router/rules
-```
-
----
-
-#### `POST /api/router/test`
-
-Dry-run a message through the router without actually publishing it. Returns which rule (if any) would match.
-
-**Request Body** — any JSON object (simulates the message payload)
-
-```json
-{ "type": "ORDER_CREATED", "id": "123", "amount": 99.99 }
-```
-
-**Response `200 OK`** (match found):
-
-```json
-{
-  "matched":   true,
-  "ruleIndex": 0,
-  "field":     "type",
-  "pattern":   "^ORDER.*",
-  "to":        "racer:orders"
-}
-```
-
-**Response `200 OK`** (no match):
-
-```json
-{ "matched": false }
-```
-
-**curl example:**
-```bash
-curl -s -X POST http://localhost:8080/api/router/test \
-  -H "Content-Type: application/json" \
-  -d '{"type":"ORDER_CREATED","id":"42"}'
-```
-
----
-
-### Channel Registry APIs
-
-Base path: `/api/channels` (requires `racer.web.channels-enabled=true`)
-
----
-
-#### `GET /api/channels`
-
-Lists every channel alias registered in the `RacerPublisherRegistry`.
-
-**Response `200 OK`**
-
-```json
-{
-  "__default__":   { "channel": "racer:messages" },
-  "orders":        { "channel": "racer:orders" },
-  "notifications": { "channel": "racer:notifications" },
-  "audit":         { "channel": "racer:audit" }
-}
-```
-
-**curl example:**
-```bash
-curl http://localhost:8080/api/channels
-```
-
----
-
-### Schema APIs
-
-Base path: `/api/schema` (requires `racer.web.schema-enabled=true`)
-
-`RacerSchemaRegistry` validates every message against a JSON Schema Draft-07 file at publish and consume time (opt-in via `racer.schema.enabled=true`). These endpoints expose the schema registry at runtime.
-
-See the full schema API documentation and `RacerSchemaRegistry` javadoc for endpoint details.
-
----
-
-### Admin UI APIs
-
-Base path: `/api/admin` (requires `racer.web.admin-enabled=true`)
-
-`RacerAdminController` exposes a live operational dashboard for the Racer instance. The static web UI is served at `http://localhost:8080/racer-admin/` (Bootstrap 5 single-page app, auto-configured alongside the REST endpoints).
-
-Enable in `application.properties`:
-```properties
-racer.web.admin-enabled=true
-```
-
----
-
-#### `GET /api/admin/overview`
-
-Health-level summary of the Racer instance.
-
-**Response `200 OK`**
-
-```json
-{
-  "status":          "UP",
-  "channelCount":    4,
-  "dlqDepth":        0,
-  "circuitBreakers": 3,
-  "rateLimiters":    2,
-  "timestamp":       "2026-03-01T10:00:00Z"
-}
-```
-
-**curl example:**
-```bash
-curl http://localhost:8080/api/admin/overview
-```
-
----
-
-#### `GET /api/admin/channels`
-
-Lists all registered channel aliases with their publish configuration.
-
-**Response `200 OK`**
-
-```json
-[
-  { "alias": "__default__", "channel": "racer:messages",      "async": true },
-  { "alias": "orders",      "channel": "racer:orders",        "async": true },
-  { "alias": "notifications","channel": "racer:notifications", "async": true },
-  { "alias": "audit",       "channel": "racer:audit",         "async": false }
-]
-```
-
-**curl example:**
-```bash
-curl http://localhost:8080/api/admin/channels
-```
-
----
-
-#### `GET /api/admin/circuitbreakers`
-
-Returns the current state of every registered `RacerCircuitBreaker`.
-
-**Response `200 OK`**
-
-```json
-[
-  { "listenerId": "sms-worker",   "state": "CLOSED",    "failureRate": 0.0  },
-  { "listenerId": "email-worker", "state": "CLOSED",    "failureRate": 0.0  },
-  { "listenerId": "push-worker",  "state": "HALF_OPEN", "failureRate": 55.0 }
-]
-```
-
-States: `CLOSED` (healthy), `OPEN` (rejecting calls), `HALF_OPEN` (probe phase).
-
-**curl example:**
-```bash
-curl http://localhost:8080/api/admin/circuitbreakers
-```
-
----
-
-#### `GET /api/admin/ratelimits`
-
-Returns current rate limiter configuration and token bucket status for each channel.
-
-**Response `200 OK`**
-
-```json
-[
-  { "channel": "racer:orders",        "permitsPerSecond": 100, "burstSize": 200, "availableTokens": 197 },
-  { "channel": "racer:notifications", "permitsPerSecond": 500, "burstSize": 1000, "availableTokens": 998 }
-]
-```
-
-**curl example:**
-```bash
-curl http://localhost:8080/api/admin/ratelimits
 ```
 
 ---
@@ -1764,7 +1330,6 @@ spring.data.redis.cluster.nodes=localhost:7001,localhost:7002,localhost:7003,loc
 | **Streams** | ✅ | ✅ | ✅ |
 | **Recommended for** | Dev / testing | Production (most teams) | Very large data sets |
 
-> See [Tutorial 15](TUTORIALS.md#tutorial-15--high-availability-sentinel--cluster) for a full walkthrough.
 
 ---
 
@@ -1819,7 +1384,6 @@ shardedPublisher.publishToShard("racer:orders:stream", payload, sender, orderId)
 racer.durable.stream-keys=racer:orders:stream:0,racer:orders:stream:1,racer:orders:stream:2,racer:orders:stream:3
 ```
 
-> See [Tutorial 16](TUTORIALS.md#tutorial-16--consumer-scaling--stream-sharding) for a full walkthrough.
 
 ---
 
@@ -1871,7 +1435,6 @@ transaction.execute(tx -> {
 }, /* pipelined = */ true);  // all PUBLISH calls go through RacerPipelinedPublisher
 ```
 
-> See [Tutorial 17](TUTORIALS.md#tutorial-17--pipelined-batch-publishing) for a full walkthrough.
 
 ---
 
@@ -1947,7 +1510,6 @@ public RacerMessage submitOrder(OrderRequest req) {
 
 If the returned `RacerMessage.priority` is blank/null, `defaultLevel` from `@RacerPriority` is used as the fallback.
 
-> See [Tutorial 18](TUTORIALS.md#tutorial-18--message-priority-channels) for a full walkthrough.
 
 ---
 
@@ -1981,7 +1543,6 @@ racer.sharding.virtual-nodes-per-shard=150
 racer.sharding.failover-enabled=true
 ```
 
-> See [Tutorial 28](TUTORIALS.md#tutorial-28--cluster-aware-publishing-with-consistent-hashing) for a full walkthrough.
 
 ---
 
@@ -2032,7 +1593,6 @@ racer.tracing.inject-into-envelope=true
 logging.pattern.console: "%d{HH:mm:ss} [%X{traceparent}] %-5level %logger{36} - %msg%n"
 ```
 
-> See [Tutorial 26](TUTORIALS.md#tutorial-26--distributed-tracing) for a full walkthrough.
 
 ---
 
@@ -2084,7 +1644,6 @@ racer.rate-limit.channels.orders.permits-per-second=500
 racer.rate-limit.channels.orders.burst-size=1000
 ```
 
-> See [Tutorial 27](TUTORIALS.md#tutorial-27--per-channel-rate-limiting) for a full walkthrough.
 
 ---
 
@@ -2148,13 +1707,13 @@ Message fails → RacerDeadLetterHandler.enqueue(message, error)
              → JSON written to racer:dlq (Redis List, leftPush)
              → retryCount incremented in message
 
-Later (opt-in REST, racer.web.dlq-enabled=true):
-POST /api/dlq/republish/one
+To republish programmatically inject DlqReprocessorService:
+dlqReprocessorService.republishOne()
              → DeadLetterQueueService pops entry from racer:dlq (rightPop, FIFO)
              → Re-publishes to original channel via RacerChannelPublisher
              → Consumer receives it again and retries
 
-POST /api/dlq/republish/all
+dlqReprocessorService.republishAll()
              → Drains entire DLQ, republishing each message
 ```
 
@@ -2277,18 +1836,7 @@ public Mono<StockEvent> reserveStock(StockRequest req) { ... }
 
 The maximum retry limit is controlled by `RedisChannels.MAX_RETRY_ATTEMPTS` (default: **3**).
 
-To trigger DLQ intentionally for testing, publish a message and have your `@RacerListener` throw an exception:
-
-```bash
-# Enable DLQ REST API first
-# racer.web.dlq-enabled=true in application.properties
-
-# Check DLQ size
-curl http://localhost:8080/api/dlq/size
-
-# Republish one DLQ entry back to its original channel
-curl -s -X POST http://localhost:8080/api/dlq/republish/one
-```
+To trigger DLQ intentionally for testing, publish a message and have your `@RacerListener` throw an exception. Then inject `DeadLetterQueueService` to inspect entries or `DlqReprocessorService` to republish them.
 
 ---
 
@@ -2350,7 +1898,7 @@ This section explains how it compares architecturally to dedicated message broke
 | **No message TTL / expiry** | Streams and DLQ grow indefinitely | `DELETE /api/dlq/clear` for manual cleanup | ✅ **Implemented** — `RacerRetentionService` — `@Scheduled` XTRIM + DLQ age pruning (R-4) |
 | **No cross-channel transactions** | Can't atomically publish to multiple channels | Sequential publish (at-most-once) | ✅ **Implemented** — `RacerTransaction` (R-5) |
 | **Single Redis = single point of failure** | No built-in clustering at the broker level | Spring Data Redis supports Sentinel/Cluster natively | ✅ **Implemented** — `compose.sentinel.yaml` + `compose.cluster.yaml` (R-6) |
-| **No schema registry** | Raw JSON; no schema evolution guards | `@JsonTypeInfo` versioned DTOs | ✅ **Implemented** — `RacerSchemaRegistry` JSON Schema Draft-07 validation on publish & consume paths; opt-in via `racer.schema.enabled=true`; REST API at `/api/schema` (R-7) |
+| **No schema registry** | Raw JSON; no schema evolution guards | `@JsonTypeInfo` versioned DTOs | ✅ **Implemented** — `RacerSchemaRegistry` JSON Schema Draft-07 validation on publish & consume paths; opt-in via `racer.schema.enabled=true` (R-7) |
 | **Limited consumer scaling** | One stream = one partition; no auto-rebalancing | Multiple consumer group members share 1 stream | ✅ **Implemented** — `@RacerStreamListener(concurrency=N)` + `RacerShardedStreamPublisher` (R-8) |
 | **Throughput ceiling** | Redis single-threaded per shard; dedicated brokers win at millions of msg/sec | 100K+ msg/sec easily handled for most apps | ✅ **Implemented** — `RacerPipelinedPublisher` (R-9) |
 | **No message priority** | FIFO only | Use `async=false` for critical channels | ✅ **Implemented** — `RacerPriorityPublisher` + `RacerPriorityConsumerService` (R-10) |
@@ -2450,7 +1998,7 @@ public void processJob(RacerMessage msg) { /* ... */ }
 
 ## Roadmap & Implementation Status
 
-All roadmap items through Phase 4 have been **fully implemented**. See [CHANGELOG.md](CHANGELOG.md) for the full release notes.
+All roadmap items through Phase 4 have been **fully implemented**.
 
 ### ✅ Phase 4 — Done (v1.3.0)
 
@@ -2459,7 +2007,6 @@ All roadmap items through Phase 4 have been **fully implemented**. See [CHANGELO
 | 4.1 | **Cluster-Aware Publishing** | Consistent-hash routing across shards with automatic failover | `RacerConsistentHashRing`, `racer.sharding.consistent-hash-enabled` |
 | 4.2 | **Distributed Tracing** | W3C `traceparent` propagation through `RacerMessage` hops; MDC integration | `RacerTraceContext`, `RacerTracingInterceptor`, `racer.tracing.enabled` |
 | 4.3 | **Per-Channel Rate Limiting** | Redis token-bucket rate limiter; fail-open on Redis outage | `RacerRateLimiter`, `RacerRateLimitException`, `racer.rate-limit.enabled` |
-| 4.4 | **Admin UI** | Four REST endpoints + Bootstrap 5 live dashboard at `/racer-admin/` | `RacerAdminController`, `racer.web.admin-enabled` |
 
 ---
 
@@ -2473,9 +2020,7 @@ All roadmap items through Phase 4 have been **fully implemented**. See [CHANGELO
 - `@RacerRoute` container annotation + `@RacerRouteRule` per-rule annotation (field, matches regex, to channel, sender)
 - `RacerRouterService` — scans all beans with `@RacerRoute` at startup via `@PostConstruct`, compiles regex patterns, exposes `route(msg)` and `dryRun()` methods
 - `RacerListenerRegistrar` (BeanPostProcessor) — scans all beans for `@RacerListener` methods; routes to `RacerDeadLetterHandler` on failure
-- `RouterController` — `GET /api/router/rules` (view compiled rules) + `POST /api/router/test` (dry-run)
-
-**Key files:** `RacerRoute.java`, `RacerRouteRule.java`, `RacerRouterService.java`, `RacerFunctionalRouter.java`, `RoutePredicates.java`, `RouteHandlers.java`, `RouterController.java`
+**Key files:** `RacerRoute.java`, `RacerRouteRule.java`, `RacerRouterService.java`, `RacerFunctionalRouter.java`, `RoutePredicates.java`, `RouteHandlers.java`
 
 ---
 
@@ -2527,8 +2072,6 @@ racer.durable.stream-keys=racer:orders:stream,racer:audit:stream
 **What was implemented:**
 - `RetentionProperties` inner class added to `RacerProperties` (streamMaxLen, dlqMaxAgeHours, scheduleCron)
 - `RacerRetentionService` — `@Scheduled` service that runs `XTRIM MAXLEN ~<n>` on all durable streams and removes DLQ entries older than the configured age
-- `DlqController` extended with `POST /api/dlq/trim` (on-demand run, requires `racer.web.dlq-enabled=true`) and `GET /api/retention/config`
-
 **Configuration:**
 ```properties
 racer.retention.stream-max-len=10000
@@ -2536,7 +2079,7 @@ racer.retention.dlq-max-age-hours=72
 racer.retention.schedule-cron=0 0 * * * *
 ```
 
-**Key files:** `RacerRetentionService.java`, `RacerProperties.java`, `DlqController.java`
+**Key files:** `RacerRetentionService.java`, `RacerProperties.java`
 
 ---
 
@@ -2565,7 +2108,7 @@ racer.retention.schedule-cron=0 0 * * * *
 - `compose.sentinel.yaml` — 1 primary + 1 replica + 3 Sentinel nodes, ready for `docker compose up`
 - `compose.cluster.yaml` — 6-node Redis Cluster (3 primaries + 3 replicas) with auto-init container
 - HA configuration snippets added (commented block) in both `application.properties`
-- See [High Availability](#high-availability) section and [Tutorial 15](TUTORIALS.md#tutorial-15--high-availability-sentinel--cluster)
+- See [High Availability](#high-availability) section
 
 **Key files:** `compose.sentinel.yaml`, `compose.cluster.yaml`
 
@@ -2575,13 +2118,13 @@ racer.retention.schedule-cron=0 0 * * * *
 
 | # | Feature | Status | Key Artifact |
 |---|---------|--------|--------------|
-| R-1 | Content-Based Routing | ✅ Done | `@RacerRoute`, `RacerRouterService`, `RouterController` |
+| R-1 | Content-Based Routing | ✅ Done | `@RacerRoute`, `RacerRouterService` |
 | R-2 | Durable Publish | ✅ Done | `@PublishResult(durable=true)`, `RacerStreamPublisher`, `RacerStreamConsumerService` |
 | R-3 | Micrometer Metrics | ✅ Done | `RacerMetrics`, Actuator, Prometheus |
 | R-4 | Retention & Pruning | ✅ Done | `RacerRetentionService`, `/api/retention/trim` |
 | R-5 | Atomic Batch Publish | ✅ Done | `RacerTransaction` |
 | R-6 | HA — Sentinel + Cluster | ✅ Done | `compose.sentinel.yaml`, `compose.cluster.yaml` |
-| R-7 | Schema Registry | ✅ Implemented | `RacerSchemaRegistry` — JSON Schema Draft-07 validation on publish & consume paths; opt-in via `racer.schema.enabled=true`; REST API at `/api/schema` |
+| R-7 | Schema Registry | ✅ Implemented | `RacerSchemaRegistry` — JSON Schema Draft-07 validation on publish & consume paths; opt-in via `racer.schema.enabled=true` |
 | R-8 | Consumer Scaling + Sharding | ✅ Done | `@RacerStreamListener(concurrency=N)`, `RacerShardedStreamPublisher` |
 | R-9 | Throughput — Pipelining | ✅ Done | `RacerPipelinedPublisher` |
 | R-10 | Message Priority | ✅ Done | `@RacerPriority`, `RacerPriorityPublisher`, `RacerPriorityConsumerService` |

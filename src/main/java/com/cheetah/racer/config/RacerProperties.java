@@ -385,93 +385,6 @@ public class RacerProperties {
     /** Pub/Sub consumer concurrency configuration. */
     private PubSubProperties pubsub = new PubSubProperties();
 
-    // ── Web API toggles ──────────────────────────────────────────────────────
-
-    /**
-     * Optional web controller toggles.
-     * Mapped under {@code racer.web.*}.
-     */
-    @Data
-    public static class WebProperties {
-
-        /** Expose {@code /api/dlq/**} endpoints when true. Default: {@code false}. */
-        private boolean dlqEnabled = false;
-
-        /** Expose {@code /api/schema/**} endpoints when true. Default: {@code false}. */
-        private boolean schemaEnabled = false;
-
-        /** Expose {@code GET /api/router/rules} and {@code POST /api/router/test} when true. Default: {@code false}. */
-        private boolean routerEnabled = false;
-
-        /** Expose {@code GET /api/channels} when true. Default: {@code false}. */
-        private boolean channelsEnabled = false;
-
-        /** Expose {@code GET /api/retention/config} when true. Default: {@code false}. */
-        private boolean retentionEnabled = false;
-
-        /**
-         * Spring Security integration for Racer web endpoints.
-         * Mapped under {@code racer.web.security.*}.
-         *
-         * <p>When {@code racer.web.security.enabled=true} <em>and</em>
-         * {@code spring-boot-starter-security} is on the classpath, Racer registers
-         * a {@link org.springframework.security.web.server.SecurityWebFilterChain}
-         * that enforces the configured roles on every {@code /api/**} endpoint.
-         *
-         * <p>The chain is registered with {@link org.springframework.core.annotation.Order}
-         * value {@code 99}, leaving order 0-98 free for application-level chains.
-         *
-         * <p>If you already have your own {@code SecurityWebFilterChain} bean for
-         * {@code /api/racer/**} paths you can leave this disabled and secure the
-         * routes yourself.
-         */
-        @Data
-        public static class SecurityProperties {
-
-            /**
-             * When {@code true}, Racer registers its own
-             * {@code SecurityWebFilterChain} protecting {@code /api/**}.
-             * Defaults to {@code false} so existing apps are not broken.
-             */
-            private boolean enabled = false;
-
-            /**
-             * Comma-separated Spring Security role names (without the {@code ROLE_}
-             * prefix) that are required to call <em>read-only</em> endpoints:
-             * {@code GET /api/dlq/**}, {@code GET /api/schema/**},
-             * {@code GET /api/router/**}, {@code GET /api/channels/**},
-             * {@code GET /api/retention/config}.
-             * Defaults to {@code OPS}.
-             */
-            private String readRole = "OPS";
-
-            /**
-             * Comma-separated Spring Security role names (without the {@code ROLE_}
-             * prefix) that are required to call <em>mutating</em> endpoints:
-             * {@code POST /api/dlq/republish/**}, {@code DELETE /api/dlq/clear},
-             * {@code POST /api/retention/trim}.
-             * Defaults to {@code ADMIN}.
-             */
-            private String writeRole = "ADMIN";
-        }
-
-        /** Security configuration for Racer web endpoints. */
-        private SecurityProperties security = new SecurityProperties();
-
-        // ── Phase 4.4 – Admin UI ─────────────────────────────────────────────
-
-        /**
-         * When {@code true} (Phase 4.4), the Racer Admin UI endpoints at
-         * {@code /api/admin/**} and the embedded web console at
-         * {@code /racer-admin/} are registered.
-         * Defaults to {@code false}.
-         */
-        private boolean adminEnabled = false;
-    }
-
-    /** Web controller opt-in configuration. */
-    private WebProperties web = new WebProperties();
-
     // ── Retention scheduling ─────────────────────────────────────────────────
 
     /**
@@ -804,8 +717,6 @@ public class RacerProperties {
 
     /** Rate-limiting configuration (4.3). */
     private RateLimitProperties rateLimit = new RateLimitProperties();
-
-    // ── 4.4 Admin UI — web properties extended separately in WebProperties ────
 
     // ── Graceful shutdown ─────────────────────────────────────────────────────
 

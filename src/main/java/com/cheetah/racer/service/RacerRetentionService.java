@@ -23,8 +23,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>When {@code racer.retention.enabled=true} is set, this bean is registered by
  * {@link com.cheetah.racer.config.RacerAutoConfiguration} with a scheduled job
  * (requires {@code @EnableScheduling} on the application context or configuration class).
- * Otherwise the bean is still available for on-demand invocation (e.g. via the
- * {@code POST /api/dlq/trim} endpoint), but the scheduled run is inactive.
+ * Otherwise the bean is still available for on-demand invocation,
+ * but the scheduled run is inactive.
  *
  * <p>Actions performed:
  * <ul>
