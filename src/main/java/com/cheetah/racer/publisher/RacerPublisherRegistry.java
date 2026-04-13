@@ -1,6 +1,7 @@
 package com.cheetah.racer.publisher;
 
 import com.cheetah.racer.config.RacerProperties;
+import com.cheetah.racer.exception.RacerConfigurationException;
 import com.cheetah.racer.metrics.NoOpRacerMetrics;
 import com.cheetah.racer.metrics.RacerMetrics;
 import com.cheetah.racer.metrics.RacerMetricsPort;
@@ -161,19 +162,42 @@ public class RacerPublisherRegistry {
     }
 
     /**
-     * Returns the publisher for the given alias, or the default publisher if the alias
-     * is {@code null}, empty, or not found in the registry.
+     * Returns the publisher for the given alias.
+     *
+     * <p>When {@code racer.strict-channel-validation=true} and the alias is non-blank but
+     * not registered, a {@link RacerConfigurationException} is thrown immediately so the
+     * misconfiguration is visible at startup rather than silently publishing to the wrong
+     * channel in production.
+     *
+     * <p>When strict mode is {@code false} (default) an unknown alias falls back to the
+     * default channel with a WARN log — preserving backward-compatible behaviour.
+     *
+     * @param alias the channel alias from {@code @RacerPublisher}, {@code @PublishResult},
+     *              or any other caller; {@code null} / blank uses the default channel
+     * @throws RacerConfigurationException when strict mode is on and the alias is unknown
      */
     public RacerChannelPublisher getPublisher(String alias) {
+        // Blank / null alias → always use the default channel
         if (alias == null || alias.isBlank()) {
             return registry.get(DEFAULT_ALIAS);
         }
+
         RacerChannelPublisher publisher = registry.get(alias);
-        if (publisher == null) {
-            log.warn("[racer] Unknown channel alias '{}' — falling back to default channel.", alias);
-            return registry.get(DEFAULT_ALIAS);
+        if (publisher != null) {
+            return publisher;
         }
-        return publisher;
+
+        // Unknown alias — strict mode throws; lenient mode falls back and warns
+        if (properties.isStrictChannelValidation()) {
+            throw new RacerConfigurationException(
+                    "[racer] Unknown channel alias '" + alias + "'. "
+                    + "Defined aliases: " + properties.getChannels().keySet() + ". "
+                    + "Fix the alias or set racer.strict-channel-validation=false to fall back to the default channel.");
+        }
+
+        log.warn("[racer] Unknown channel alias '{}' — falling back to default channel. "
+                + "Set racer.strict-channel-validation=true to turn this into a startup error.", alias);
+        return registry.get(DEFAULT_ALIAS);
     }
 
     /**

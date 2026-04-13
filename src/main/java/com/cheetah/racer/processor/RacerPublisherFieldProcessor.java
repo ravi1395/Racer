@@ -1,6 +1,8 @@
 package com.cheetah.racer.processor;
 
 import com.cheetah.racer.annotation.RacerPublisher;
+import com.cheetah.racer.config.RacerProperties;
+import com.cheetah.racer.exception.RacerConfigurationException;
 import com.cheetah.racer.publisher.RacerChannelPublisher;
 import com.cheetah.racer.publisher.RacerPublisherRegistry;
 import lombok.extern.slf4j.Slf4j;
@@ -47,6 +49,21 @@ public class RacerPublisherFieldProcessor implements BeanPostProcessor, Applicat
                     }
                     String alias = annotation.value();
                     RacerPublisherRegistry registry = applicationContext.getBean(RacerPublisherRegistry.class);
+
+                    // In strict mode, validate the alias eagerly here so the error message
+                    // includes the declaring class and field name for fast diagnosis.
+                    if (!alias.isBlank()) {
+                        RacerProperties props = applicationContext.getBean(RacerProperties.class);
+                        if (props.isStrictChannelValidation()
+                                && !props.getChannels().containsKey(alias)) {
+                            throw new RacerConfigurationException(
+                                    "@RacerPublisher(\"" + alias + "\") on "
+                                    + bean.getClass().getSimpleName() + "." + field.getName()
+                                    + " — alias not found in racer.channels.*. "
+                                    + "Defined aliases: " + props.getChannels().keySet() + ".");
+                        }
+                    }
+
                     RacerChannelPublisher publisher = registry.getPublisher(alias);
 
                     field.setAccessible(true);

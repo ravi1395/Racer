@@ -1,6 +1,7 @@
 package com.cheetah.racer.processor;
 
 import com.cheetah.racer.annotation.RacerPublisher;
+import com.cheetah.racer.config.RacerProperties;
 import com.cheetah.racer.publisher.RacerChannelPublisher;
 import com.cheetah.racer.publisher.RacerPublisherRegistry;
 import org.junit.jupiter.api.BeforeEach;
@@ -23,6 +24,7 @@ class RacerPublisherFieldProcessorTest {
     @Mock private ApplicationContext applicationContext;
     @Mock private RacerPublisherRegistry publisherRegistry;
     @Mock private RacerChannelPublisher channelPublisher;
+    @Mock private RacerProperties racerProperties;
 
     private RacerPublisherFieldProcessor processor;
 
@@ -32,6 +34,7 @@ class RacerPublisherFieldProcessorTest {
         processor.setApplicationContext(applicationContext);
 
         when(applicationContext.getBean(RacerPublisherRegistry.class)).thenReturn(publisherRegistry);
+        when(applicationContext.getBean(RacerProperties.class)).thenReturn(racerProperties);
         when(publisherRegistry.getPublisher("orders")).thenReturn(channelPublisher);
         when(publisherRegistry.getPublisher("")).thenReturn(channelPublisher);
         when(channelPublisher.getChannelName()).thenReturn("racer:orders");

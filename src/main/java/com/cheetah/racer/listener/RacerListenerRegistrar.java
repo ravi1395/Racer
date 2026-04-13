@@ -4,6 +4,7 @@ import com.cheetah.racer.annotation.ConcurrencyMode;
 import com.cheetah.racer.annotation.RacerListener;
 import com.cheetah.racer.annotation.RacerRoute;
 import com.cheetah.racer.annotation.Routed;
+import com.cheetah.racer.exception.RacerConfigurationException;
 import com.cheetah.racer.circuitbreaker.RacerCircuitBreaker;
 import com.cheetah.racer.circuitbreaker.RacerCircuitBreakerRegistry;
 import com.cheetah.racer.config.RacerProperties;
@@ -276,6 +277,18 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
         // --- resolve channel name ---
         String channel    = resolve(ann.channel());
         String channelRef = resolve(ann.channelRef());
+
+        // In strict mode, verify that a non-blank channelRef actually maps to a configured alias.
+        // This catches typos like @RacerListener(channelRef="ordres") at startup.
+        if (!channelRef.isBlank()
+                && racerProperties.isStrictChannelValidation()
+                && !racerProperties.getChannels().containsKey(channelRef)) {
+            throw new RacerConfigurationException(
+                    "@RacerListener(channelRef=\"" + channelRef + "\") on "
+                    + beanName + "." + method.getName() + "() — alias not found in racer.channels.*. "
+                    + "Defined aliases: " + racerProperties.getChannels().keySet() + ".");
+        }
+
         String resolvedChannel = RacerChannelResolver.resolveChannel(
                 channel, channelRef, racerProperties, logPrefix());
 
@@ -676,13 +689,21 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
             }
         }
 
-        // 5. Resolve method arguments
+        // 5. Resolve method arguments — most failures here are JSON deserialization errors
+        //    caused by bad producer payloads, so we log at WARN (not ERROR) and include
+        //    the target type + a payload preview so the problem is immediately diagnosable.
         Object[] args;
         try {
             args = resolveArguments(method, message, wasForwarded);
         } catch (Exception e) {
-            log.error("[RACER-LISTENER] '{}' — cannot resolve arguments for id={}: {}",
-                    listenerId, message.getId(), e.getMessage());
+            String paramTypeName = method.getParameterCount() > 0
+                    ? method.getParameterTypes()[0].getSimpleName() : "unknown";
+            String payload = message.getPayload();
+            String preview = payload != null
+                    ? payload.substring(0, Math.min(200, payload.length())) : "<null>";
+            log.warn("[RACER-LISTENER] '{}' — failed to deserialize payload to {} for id={}: {}. "
+                    + "Message will be forwarded to DLQ. Payload preview: {}",
+                    listenerId, paramTypeName, message.getId(), e.getMessage(), preview);
             if (cb != null) cb.onFailure();
             return enqueueDeadLetter(message, e)
                     .doOnTerminate(() -> incrementFailed(listenerId))

@@ -47,27 +47,37 @@ public class DeadLetterQueueService implements RacerDeadLetterHandler {
 
     /**
      * Push a failed message to the DLQ (LPUSH — newest entries first).
+     *
+     * <p>Logs at WARN before the push so that any DLQ entry is always accompanied by
+     * a log line — even if the downstream Redis call fails.  After a successful push
+     * an INFO confirmation is emitted that includes the channel and the failure reason,
+     * making it easy to correlate log lines with DLQ entries during incidents.
      */
     @Override
     public Mono<Long> enqueue(RacerMessage message, Throwable error) {
         DeadLetterMessage dlm = DeadLetterMessage.from(message, error);
+        // Capture the reason string once so the lambda below does not reference the Throwable
+        String reason = error.getMessage() != null ? error.getMessage() : error.getClass().getSimpleName();
         return Mono.fromCallable(() -> objectMapper.writeValueAsString(dlm))
                 .subscribeOn(Schedulers.boundedElastic())
-                .doOnNext(json -> log.warn("[DLQ] Enqueuing failed message id={} error='{}'", message.getId(), error.getMessage()))
+                .doOnNext(json -> log.warn("[RACER-DLQ] Enqueuing failed message id={} channel='{}' reason='{}'",
+                        message.getId(), message.getChannel(), reason))
                 .flatMap(json -> reactiveStringRedisTemplate.opsForList()
                         .leftPush(RedisChannels.DEAD_LETTER_QUEUE, json)
                         .flatMap(size -> {
-                            log.debug("[DLQ] Queue size after enqueue: {}", size);
+                            // Confirm successful enqueue at INFO so it is visible in default log configs
+                            log.info("[RACER-DLQ] Enqueued message id={} channel='{}' — reason: {}. DLQ size: {}",
+                                    message.getId(), message.getChannel(), reason, size);
                             if (size > maxSize) {
                                 return reactiveStringRedisTemplate.opsForList()
                                         .trim(RedisChannels.DEAD_LETTER_QUEUE, 0, maxSize - 1)
-                                        .doOnSuccess(v -> log.warn("[DLQ] Trimmed queue to {} entries (was {})", maxSize, size))
+                                        .doOnSuccess(v -> log.warn("[RACER-DLQ] Trimmed DLQ to {} entries (was {})", maxSize, size))
                                         .thenReturn(size);
                             }
                             return Mono.just(size);
                         }))
                 .onErrorResume(JsonProcessingException.class, e -> {
-                    log.error("[DLQ] Failed to serialize dead letter message", e);
+                    log.error("[RACER-DLQ] Failed to serialize dead letter message id={}: {}", message.getId(), e.getMessage(), e);
                     return Mono.error(e);
                 });
     }
