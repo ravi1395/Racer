@@ -12,7 +12,7 @@
 
 	<groupId>io.github.ravi1395</groupId>
 	<artifactId>racer</artifactId>
-	<version>1.3.1</version>
+	<version>1.4.0</version>
 	<name>racer</name>
 	<description>Reactive Redis Messaging with Pub/Sub and Dead Letter Queue</description>
 	<url>https://github.com/ravi1395/Racer</url>
@@ -37,7 +37,7 @@
 		<connection>scm:git:git://github.com/ravi1395/Racer.git</connection>
 		<developerConnection>scm:git:ssh://github.com/ravi1395/Racer.git</developerConnection>
 		<url>https://github.com/ravi1395/Racer</url>
-		<tag>v1.3.0</tag>
+		<tag>v1.4.0</tag>
 	</scm>
 
 	<properties>

@@ -34,6 +34,18 @@ public class RacerProperties {
     private String defaultChannel = RedisChannels.MESSAGE_CHANNEL;
 
     /**
+     * When {@code true}, any reference to a channel alias that does not exist in
+     * {@code racer.channels.*} throws a
+     * {@link com.cheetah.racer.exception.RacerConfigurationException} at startup
+     * instead of silently falling back to the default channel.
+     *
+     * <p>Enable this in all non-legacy services to catch typos such as
+     * {@code @RacerPublisher("ordres")} at startup rather than in production.
+     * Defaults to {@code false} for backward compatibility.
+     */
+    private boolean strictChannelValidation = false;
+
+    /**
      * Named channel definitions keyed by alias.
      */
     private Map<String, ChannelProperties> channels = new LinkedHashMap<>();
@@ -409,6 +421,22 @@ public class RacerProperties {
          * is not explicitly specified. Defaults to {@code "5s"}.
          */
         private String defaultTimeout = "5s";
+
+        /**
+         * Interval in milliseconds between polls when waiting for a stream-based
+         * request-reply response ({@code XREAD} on the ephemeral reply stream).
+         *
+         * <p>Lower values reduce tail latency at the cost of more Redis round-trips.
+         * Higher values reduce Redis load for workloads that have naturally high latency.
+         * Defaults to {@code 200} ms.
+         *
+         * <p>Example:
+         * <pre>
+         * # Halve polling latency for latency-sensitive services
+         * racer.request-reply.stream-poll-interval-ms=50
+         * </pre>
+         */
+        private long streamPollIntervalMs = 200;
     }
 
     /** Request-reply configuration. */

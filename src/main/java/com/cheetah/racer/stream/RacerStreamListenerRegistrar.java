@@ -3,6 +3,7 @@ package com.cheetah.racer.stream;
 import com.cheetah.racer.annotation.ConcurrencyMode;
 import com.cheetah.racer.annotation.RacerStreamListener;
 import com.cheetah.racer.circuitbreaker.RacerCircuitBreaker;
+import com.cheetah.racer.exception.RacerConfigurationException;
 import com.cheetah.racer.circuitbreaker.RacerCircuitBreakerRegistry;
 import com.cheetah.racer.config.RacerProperties;
 import com.cheetah.racer.dedup.RacerDedupService;
@@ -198,6 +199,18 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
     private void registerStreamListener(Object bean, Method method, RacerStreamListener ann, String beanName) {
         String rawStreamKey = resolve(ann.streamKey());
         String streamKeyRef = resolve(ann.streamKeyRef());
+
+        // In strict mode, verify that a non-blank streamKeyRef maps to a configured alias.
+        // This catches typos like @RacerStreamListener(streamKeyRef="ordres") at startup.
+        if (!streamKeyRef.isBlank()
+                && racerProperties.isStrictChannelValidation()
+                && !racerProperties.getChannels().containsKey(streamKeyRef)) {
+            throw new RacerConfigurationException(
+                    "@RacerStreamListener(streamKeyRef=\"" + streamKeyRef + "\") on "
+                    + beanName + "." + method.getName() + "() — alias not found in racer.channels.*. "
+                    + "Defined aliases: " + racerProperties.getChannels().keySet() + ".");
+        }
+
         String streamKey    = RacerChannelResolver.resolveStreamKey(
                 rawStreamKey, streamKeyRef, racerProperties, logPrefix());
 
@@ -366,12 +379,21 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
             }
         }
 
-        // Resolve argument
+        // Resolve argument — most failures here are JSON deserialization errors caused by bad
+        // producer payloads; log at WARN (not ERROR) and include the target type + payload
+        // preview so the problem is immediately diagnosable without reading raw Redis entries.
         Object arg;
         try {
             arg = resolveArgument(method, message);
         } catch (Exception e) {
-            log.error("[RACER-STREAM-LISTENER] '{}' — cannot resolve argument for {}: {}", listenerId, recordId, e.getMessage());
+            String paramTypeName = method.getParameterCount() > 0
+                    ? method.getParameterTypes()[0].getSimpleName() : "unknown";
+            String payload = message.getPayload();
+            String preview = payload != null
+                    ? payload.substring(0, Math.min(200, payload.length())) : "<null>";
+            log.warn("[RACER-STREAM-LISTENER] '{}' — failed to deserialize payload to {} for entry {}: {}. "
+                    + "Message will be forwarded to DLQ. Payload preview: {}",
+                    listenerId, paramTypeName, recordId, e.getMessage(), preview);
             if (cb != null) cb.onFailure();
             return enqueueDeadLetter(message, e)
                     .then(RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, recordId))

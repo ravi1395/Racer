@@ -210,11 +210,24 @@ public class RacerClientFactoryBean<T> implements FactoryBean<T>, EnvironmentAwa
 
         return redisTemplate.opsForStream().add(entry)
                 .then(pollForStreamReply(responseStreamKey, correlationId, timeout))
-                .doFinally(signal -> redisTemplate.delete(responseStreamKey).subscribe());
+                .doFinally(signal ->
+                        // Delete the ephemeral reply stream after the request completes (success, error, or cancel).
+                        // Use onErrorResume so a Redis hiccup during cleanup does not mask the original result,
+                        // and log at WARN so leaked keys are visible in ops dashboards without alerting.
+                        redisTemplate.delete(responseStreamKey)
+                                .doOnError(ex -> log.warn(
+                                        "[RACER-CLIENT] Failed to clean up response stream '{}': {}. "
+                                        + "Key may leak — consider adding this key to your retention policy.",
+                                        responseStreamKey, ex.getMessage()))
+                                .onErrorResume(ex -> Mono.empty())
+                                .subscribe());
     }
 
     private Mono<RacerReply> pollForStreamReply(String responseStreamKey, String correlationId, Duration timeout) {
-        long maxAttempts = timeout.toMillis() / 200;
+        // Use the configured poll interval rather than a hardcoded 200 ms value so that
+        // latency-sensitive services can reduce it via racer.request-reply.stream-poll-interval-ms.
+        long pollIntervalMs = racerProperties.getRequestReply().getStreamPollIntervalMs();
+        long maxAttempts    = timeout.toMillis() / Math.max(1, pollIntervalMs);
 
         return Mono.defer(() -> {
             Mono<RacerReply> one = (Mono<RacerReply>) redisTemplate
@@ -234,8 +247,9 @@ public class RacerClientFactoryBean<T> implements FactoryBean<T>, EnvironmentAwa
                     });
             return one;
         })
+        // Repeat until a reply arrives or maxAttempts is exhausted, sleeping pollIntervalMs between tries
         .repeatWhenEmpty(companion ->
-                companion.take(maxAttempts).delayElements(Duration.ofMillis(200)))
+                companion.take(maxAttempts).delayElements(Duration.ofMillis(pollIntervalMs)))
         .timeout(timeout);
     }
 
