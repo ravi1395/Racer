@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    POM for the racer-test module.
+
+    Provides test-support helpers, in-memory publishers, and the @RacerTest
+    application slice for host projects that use Racer.
+
+    Inherits shared properties (java.version, netty.version, racer.version),
+    dependencyManagement (Netty BOM), publisher metadata, and the release profile
+    from the root racer-parent POM. The racer sibling dependency uses ${racer.version}
+    — defined in the parent — so both modules always stay version-aligned.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.ravi1395</groupId>
+        <artifactId>racer-parent</artifactId>
+        <version>1.5.0</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>racer-test</artifactId>
+    <name>racer-test</name>
+    <description>Test support module for Racer — in-memory publishers, test harness, and @RacerTest slice</description>
+
+    <dependencies>
+        <!-- The main Racer library — version is kept in sync via ${racer.version}
+             defined in the parent POM, so both modules always align. -->
+        <dependency>
+            <groupId>io.github.ravi1395</groupId>
+            <artifactId>racer</artifactId>
+            <version>${racer.version}</version>
+        </dependency>
+
+        <!-- Spring Boot reactive Redis (for ReactiveRedisTemplate types used in stubs) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
+        </dependency>
+
+        <!--
+            Spring Boot Test — compile scope because these test-support classes are
+            themselves meant to be consumed in the test classpath of host projects.
+            Consumers declare racer-test with <scope>test</scope> in their own pom.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+        </dependency>
+
+        <!-- Reactor test utilities (StepVerifier) -->
+        <dependency>
+            <groupId>io.projectreactor</groupId>
+            <artifactId>reactor-test</artifactId>
+        </dependency>
+
+        <!-- Jackson (for RacerMessageBuilder serialization) -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!--
+            micrometer-core is declared optional in the racer module and therefore does
+            not propagate transitively to racer-test's test classpath. Spring's
+            ConfigurationClassParser introspects RacerAutoConfiguration at context-load
+            time and fails with NoClassDefFoundError when MeterRegistry is absent.
+            Adding it here (test scope) ensures the test context boots successfully.
+        -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>
