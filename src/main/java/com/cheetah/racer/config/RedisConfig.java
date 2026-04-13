@@ -3,6 +3,7 @@ package com.cheetah.racer.config;
 import com.cheetah.racer.model.RacerMessage;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -32,14 +33,37 @@ public class RedisConfig {
         return mapper;
     }
 
+    /**
+     * Primary {@link ReactiveRedisTemplate} used throughout the Racer library for all
+     * Redis Pub/Sub and key-value operations.
+     *
+     * <p>{@code @ConditionalOnMissingBean} allows the {@code racer-test} module to
+     * register a no-op stub bean first (under the same name), preventing this method
+     * from attempting to acquire a {@link ReactiveRedisConnectionFactory} in test
+     * environments that have no real Redis configured.
+     *
+     * <p>{@code @ConditionalOnBean(ReactiveRedisConnectionFactory.class)} ensures this
+     * bean is only created when a connection factory is actually available — it is skipped
+     * gracefully when Redis auto-configuration is excluded (e.g. in unit tests).
+     */
     @Bean
+    @ConditionalOnMissingBean(name = "reactiveStringRedisTemplate")
+    @ConditionalOnBean(ReactiveRedisConnectionFactory.class)
     public ReactiveRedisTemplate<String, String> reactiveStringRedisTemplate(
             ReactiveRedisConnectionFactory connectionFactory) {
         return new ReactiveRedisTemplate<>(connectionFactory,
                 RedisSerializationContext.string());
     }
 
+    /**
+     * Secondary template used for typed {@link RacerMessage} serialization (e.g. in
+     * health checks and DLQ introspection utilities).
+     *
+     * <p>{@code @ConditionalOnBean(ReactiveRedisConnectionFactory.class)} guards creation
+     * so the bean is skipped gracefully when Redis auto-configuration is excluded in tests.
+     */
     @Bean
+    @ConditionalOnBean(ReactiveRedisConnectionFactory.class)
     public ReactiveRedisTemplate<String, RacerMessage> reactiveRacerMessageRedisTemplate(
             ReactiveRedisConnectionFactory connectionFactory, ObjectMapper objectMapper) {
 

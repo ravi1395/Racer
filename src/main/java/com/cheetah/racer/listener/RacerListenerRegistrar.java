@@ -136,6 +136,24 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
     private final Map<String, List<CompiledRouteRule>> perListenerRules = new ConcurrentHashMap<>();
 
     /**
+     * Stores the bean, method, channel and dedup flag for every registered listener.
+     * Used by {@link com.cheetah.racer.test.RacerTestHarness} to inject synthetic
+     * messages directly into the processing pipeline without Redis.
+     */
+    private final Map<String, ListenerRegistration> listenerRegistrations = new ConcurrentHashMap<>();
+
+    /**
+     * Metadata captured at listener registration time so the processing pipeline can
+     * be invoked directly (e.g. from the test harness) without going through Redis.
+     *
+     * @param bean          the Spring bean that owns the handler method
+     * @param method        the {@code @RacerListener}-annotated method
+     * @param channel       the resolved Redis channel name
+     * @param dedupEnabled  whether deduplication is active for this listener
+     */
+    public record ListenerRegistration(Object bean, Method method, String channel, boolean dedupEnabled) {}
+
+    /**
      * Per-listener dedup field names set via {@link RacerListener#dedupKey()}.
      * When present the named field is extracted from the payload JSON and used as the
      * Redis dedup key instead of the auto-generated envelope UUID.
@@ -317,6 +335,11 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
         }
 
         final boolean dedupEnabled = ann.dedup();
+
+        // Store registration metadata so RacerTestHarness can inject synthetic messages
+        // directly into the processing pipeline without going through Redis Pub/Sub.
+        // Stored after dedupEnabled is resolved so the registration carries the correct flag.
+        listenerRegistrations.put(listenerId, new ListenerRegistration(bean, method, resolvedChannel, dedupEnabled));
 
         // Store dedupKey field name for use in dispatch(); pre-register counter at 0
         if (dedupEnabled) {
@@ -786,6 +809,55 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
         if (RacerMessage.class.isAssignableFrom(paramType)) return message;
         if (String.class.equals(paramType))               return message.getPayload();
         return objectMapper.readValue(message.getPayload(), paramType);
+    }
+
+    // ── Test harness API ──────────────────────────────────────────────────────
+
+    /**
+     * Returns the registration for all currently-registered pub/sub listeners.
+     * Intended for use by {@link com.cheetah.racer.test.RacerTestHarness} to enumerate
+     * registered listener IDs without referencing implementation details.
+     *
+     * @return unmodifiable view of all listener registrations, keyed by listener ID
+     */
+    public Map<String, ListenerRegistration> getListenerRegistrations() {
+        return Map.copyOf(listenerRegistrations);
+    }
+
+    /**
+     * Directly feeds {@code message} into the full processing pipeline of the listener
+     * identified by {@code listenerId}, bypassing Redis Pub/Sub entirely.
+     *
+     * <p>The message goes through exactly the same stages as a real Redis-delivered message:
+     * back-pressure gate → circuit-breaker gate → deduplication → routing →
+     * interceptors → schema validation → argument resolution → handler invocation → DLQ on error.
+     *
+     * <p>This method is the primary entry point for {@link com.cheetah.racer.test.RacerTestHarness}.
+     *
+     * @param listenerId the listener ID as configured via {@code @RacerListener(id="...")} or
+     *                   the auto-generated {@code "<beanName>.<methodName>"} fallback
+     * @param message    the synthetic message to process
+     * @return a {@link Mono} that completes when the pipeline finishes
+     * @throws IllegalArgumentException if no listener is registered with the given ID
+     */
+    public Mono<Void> processMessage(String listenerId, RacerMessage message) {
+        ListenerRegistration reg = listenerRegistrations.get(listenerId);
+        if (reg == null) {
+            return Mono.error(new IllegalArgumentException(
+                    "[RACER-LISTENER] No listener registered with id '" + listenerId
+                    + "'. Registered ids: " + listenerRegistrations.keySet()));
+        }
+        try {
+            // Serialize the message to JSON so the existing dispatch() method receives
+            // the same raw-JSON input it would get from a real Redis message.
+            String rawJson = objectMapper.writeValueAsString(message);
+            return dispatch(reg.bean(), reg.method(), rawJson, listenerId,
+                    reg.channel(), reg.dedupEnabled());
+        } catch (Exception e) {
+            return Mono.error(new IllegalStateException(
+                    "[RACER-LISTENER] Failed to serialize message for listener '" + listenerId + "': "
+                    + e.getMessage(), e));
+        }
     }
 
     /**
