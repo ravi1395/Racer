@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -77,7 +78,7 @@ public class InMemoryRacerPublisherRegistry extends RacerPublisherRegistry {
     public InMemoryRacerPublisherRegistry(RacerProperties properties, ObjectMapper objectMapper) {
         // Pass null for the Redis template — safe because our init() override never calls super.init()
         // and therefore never dereferences the template.
-        super(properties, null, objectMapper);
+        super(properties, null, objectMapper, Optional.empty(), Optional.empty(), Optional.empty());
         this.racerProperties = properties;
         this.objectMapper    = objectMapper;
     }
