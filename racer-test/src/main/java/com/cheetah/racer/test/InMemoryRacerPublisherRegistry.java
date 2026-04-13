@@ -193,6 +193,35 @@ public class InMemoryRacerPublisherRegistry extends RacerPublisherRegistry {
     }
 
     /**
+     * Registers an additional channel alias programmatically, using the alias itself as
+     * the channel name.
+     *
+     * <p>Called by {@link RacerTestExecutionListener} to register channels declared in
+     * {@link RacerTest#channels()} before the test method runs.  Registration is
+     * idempotent — if an {@link InMemoryRacerPublisher} already exists for {@code alias}
+     * (e.g. because it was registered by {@link #init()} from {@code application.properties}),
+     * this call is a no-op.
+     *
+     * @param alias the channel alias to register; the channel name is set equal to the alias
+     */
+    public void registerChannel(String alias) {
+        if (alias == null || alias.isBlank()) {
+            log.warn("[RACER-TEST] registerChannel() called with a blank alias — ignoring.");
+            return;
+        }
+        if (testPublishers.containsKey(alias)) {
+            log.debug("[RACER-TEST] Channel alias '{}' is already registered — skipping duplicate.",
+                    alias);
+            return;
+        }
+        // Use alias as both the Redis channel name and the registry key so that
+        // @RacerTest(channels = {"orders"}) registers "orders" → channel "orders".
+        testPublishers.put(alias, new InMemoryRacerPublisher(alias, alias, objectMapper));
+        log.info("[RACER-TEST] In-memory publisher registered from @RacerTest.channels(): "
+                + "alias='{}' → channel='{}'", alias, alias);
+    }
+
+    /**
      * Clears all captured messages across every registered in-memory publisher.
      * Call this in {@code @BeforeEach} to ensure each test starts with a clean slate.
      */

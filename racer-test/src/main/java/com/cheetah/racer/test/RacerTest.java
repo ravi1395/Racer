@@ -2,6 +2,7 @@ package com.cheetah.racer.test;
 
 import org.springframework.boot.autoconfigure.ImportAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.TestExecutionListeners;
 
 import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
@@ -105,6 +106,11 @@ import java.lang.annotation.Target;
 @Inherited
 @SpringBootTest
 @ImportAutoConfiguration(RacerTestAutoConfiguration.class)
+@TestExecutionListeners(
+        listeners = RacerTestExecutionListener.class,
+        // Keep Spring Boot's default listeners (MockitoTestExecutionListener,
+        // SpringExtension wiring, etc.) alongside the Racer listener.
+        mergeMode = TestExecutionListeners.MergeMode.MERGE_WITH_DEFAULTS)
 public @interface RacerTest {
 
     /**
@@ -113,17 +119,31 @@ public @interface RacerTest {
      * {@code application.properties}.
      *
      * <p>Each alias is registered with a channel name equal to the alias itself.
-     * Useful when a test does not load a real {@code application.properties} or
-     * needs channels that are not configured in the main properties.
+     * This lets tests declare the channels they need inline, without requiring a
+     * real {@code application.properties} entry:
+     *
+     * <pre>
+     * {@literal @}RacerTest(channels = {"orders", "notifications"})
+     * class OrderServiceTest {
+     *
+     *     {@literal @}Autowired InMemoryRacerPublisherRegistry registry;
+     *
+     *     {@literal @}Test
+     *     void publishes_confirmation() {
+     *         // "orders" and "notifications" are available immediately
+     *         registry.getTestPublisher("orders").assertMessageCount(1);
+     *     }
+     * }
+     * </pre>
+     *
+     * <p>Channels already configured via {@code racer.channels.*} in
+     * {@code application.properties} are not duplicated — registration is idempotent.
      *
      * <p>Defaults to an empty array; all channels come from the standard Racer
      * properties configuration in that case.
      *
-     * <p><strong>Note:</strong> this attribute is informational metadata — the actual
-     * publisher registration uses {@link InMemoryRacerPublisherRegistry#init()}, which
-     * reads from {@link com.cheetah.racer.config.RacerProperties}.  To make additional
-     * channels available, configure them via {@code application.properties} or inline
-     * {@code @TestPropertySource} rather than relying on this attribute alone.
+     * @see InMemoryRacerPublisherRegistry#registerChannel(String)
+     * @see RacerTestExecutionListener
      */
     String[] channels() default {};
 }

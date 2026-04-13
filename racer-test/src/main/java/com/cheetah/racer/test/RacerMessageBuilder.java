@@ -1,5 +1,6 @@
 package com.cheetah.racer.test;
 
+import com.cheetah.racer.model.PriorityLevel;
 import com.cheetah.racer.model.RacerMessage;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -23,7 +24,7 @@ import java.util.UUID;
  * RacerMessage msg = RacerMessageBuilder.forChannel("racer:orders")
  *         .payload(new Order(1, "Widget"))
  *         .sender("test-harness")
- *         .priority("HIGH")
+ *         .priority(PriorityLevel.HIGH)
  *         .build();
  *
  * harness.fireAt("orderService.handleOrder", msg).block();
@@ -55,11 +56,10 @@ public class RacerMessageBuilder {
     private String sender = "test-harness";
 
     /**
-     * Priority level string.
-     * Defaults to {@code "NORMAL"}.  Valid values: {@code "HIGH"}, {@code "NORMAL"},
-     * {@code "LOW"} (or any custom level registered in {@code racer.priority.levels}).
+     * Priority level.
+     * Defaults to {@link PriorityLevel#NORMAL}.
      */
-    private String priority = "NORMAL";
+    private PriorityLevel priority = PriorityLevel.NORMAL;
 
     /**
      * Explicit message ID.  When {@code null} (the default), a random UUID is generated
@@ -126,11 +126,11 @@ public class RacerMessageBuilder {
     /**
      * Sets the priority level.
      *
-     * @param priority the priority string, e.g. {@code "HIGH"}, {@code "NORMAL"},
-     *                 {@code "LOW"}; defaults to {@code "NORMAL"} when not set
+     * @param priority the priority level (e.g. {@link PriorityLevel#HIGH}); defaults to
+     *                 {@link PriorityLevel#NORMAL} when not set
      * @return this builder
      */
-    public RacerMessageBuilder priority(String priority) {
+    public RacerMessageBuilder priority(PriorityLevel priority) {
         this.priority = priority;
         return this;
     }

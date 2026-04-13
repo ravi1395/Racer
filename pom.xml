@@ -1,277 +1,175 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Root aggregator and parent POM for the Racer multi-module build.
+
+    This POM serves two roles:
+    1. Aggregator — declares <modules> so that `mvn clean install` from the repo
+       root builds both racer and racer-test in dependency order.
+    2. Parent — provides shared version properties, dependencyManagement entries
+       (e.g. Netty BOM), publisher metadata (licenses, SCM, developers), and the
+       release profile used when publishing to Maven Central.
+
+    Modules:
+      racer       — the core reactive Redis messaging library
+      racer-test  — test-support helpers and the @RacerTest slice
+-->
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
-	<modelVersion>4.0.0</modelVersion>
+    xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
 
-	<parent>
-		<groupId>org.springframework.boot</groupId>
-		<artifactId>spring-boot-starter-parent</artifactId>
-		<version>3.4.3</version>
-		<relativePath/>
-	</parent>
+    <!-- Inherit Spring Boot's dependency management so child modules can use
+         managed dependency versions without repeating them. -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.4.3</version>
+        <relativePath/>
+    </parent>
 
-	<groupId>io.github.ravi1395</groupId>
-	<artifactId>racer</artifactId>
-	<version>1.4.0</version>
-	<name>racer</name>
-	<description>Reactive Redis Messaging with Pub/Sub and Dead Letter Queue</description>
-	<url>https://github.com/ravi1395/Racer</url>
+    <groupId>io.github.ravi1395</groupId>
+    <artifactId>racer-parent</artifactId>
+    <version>1.5.0</version>
+    <packaging>pom</packaging>
+    <name>racer-parent</name>
+    <description>Parent POM for the Racer reactive Redis messaging project</description>
+    <url>https://github.com/ravi1395/Racer</url>
 
-	<licenses>
-		<license>
-			<name>Apache License, Version 2.0</name>
-			<url>https://www.apache.org/licenses/LICENSE-2.0</url>
-			<distribution>repo</distribution>
-		</license>
-	</licenses>
+    <!-- Build both sibling modules in dependency order. Maven resolves the
+         inter-module dependency racer-test → racer automatically. -->
+    <modules>
+        <module>racer</module>
+        <module>racer-test</module>
+    </modules>
 
-	<developers>
-		<developer>
-			<id>ravi1395</id>
-			<name>Ravi Chandrasekhar</name>
-			<email>ravi1395@gmail.com</email>
-		</developer>
-	</developers>
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
 
-	<scm>
-		<connection>scm:git:git://github.com/ravi1395/Racer.git</connection>
-		<developerConnection>scm:git:ssh://github.com/ravi1395/Racer.git</developerConnection>
-		<url>https://github.com/ravi1395/Racer</url>
-		<tag>v1.4.0</tag>
-	</scm>
+    <developers>
+        <developer>
+            <id>ravi1395</id>
+            <name>Ravi Chandrasekhar</name>
+            <email>ravi1395@gmail.com</email>
+        </developer>
+    </developers>
 
-	<properties>
-		<java.version>21</java.version>
-		<testcontainers.version>1.21.3</testcontainers.version>
-		<!-- Security: force Netty upgrade to fix CVE-2025-55163, CVE-2025-58056, CVE-2025-58057, CVE-2025-67735 -->
-		<netty.version>4.1.129.Final</netty.version>
-	</properties>
+    <scm>
+        <connection>scm:git:git://github.com/ravi1395/Racer.git</connection>
+        <developerConnection>scm:git:ssh://github.com/ravi1395/Racer.git</developerConnection>
+        <url>https://github.com/ravi1395/Racer</url>
+        <tag>v1.5.0</tag>
+    </scm>
 
-	<dependencyManagement>
-		<dependencies>
-			<!-- Force all Netty artifacts to 4.1.129.Final to resolve:
-			     CVE-2025-55163 (CVSS 7.5) - MadeYouReset DDoS
-			     CVE-2025-58057 (CVSS 7.5) - codec-compression resource exhaustion
-			     CVE-2025-67735 (CVSS 6.5) - CRLF injection in HttpRequestEncoder
-			     CVE-2025-58056 (CVSS 7.5) - traffic amplification
-			     Spring Boot BOM declares ${netty.version} so overriding the property above
-			     covers most artifacts; these entries cover any that do not honour the property. -->
-			<dependency>
-				<groupId>io.netty</groupId>
-				<artifactId>netty-bom</artifactId>
-				<version>4.1.129.Final</version>
-				<type>pom</type>
-				<scope>import</scope>
-			</dependency>
-		</dependencies>
-	</dependencyManagement>
+    <!-- Shared properties inherited by all child modules. -->
+    <properties>
+        <java.version>21</java.version>
+        <!-- Security: force Netty upgrade to fix CVE-2025-55163, CVE-2025-58056,
+             CVE-2025-58057, CVE-2025-67735. Spring Boot BOM honours this property
+             for most Netty artifacts; the explicit netty-bom import below catches
+             any that don't. -->
+        <netty.version>4.1.129.Final</netty.version>
+        <!-- Convenience property so racer-test can reference the sibling artifact
+             version without a hardcoded string. -->
+        <racer.version>${project.version}</racer.version>
+    </properties>
 
-	<dependencies>
-		<dependency>
-			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter-data-redis-reactive</artifactId>
-		</dependency>
-		<dependency>
-			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter-aop</artifactId>
-		</dependency>
-		<dependency>
-			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-configuration-processor</artifactId>
-			<optional>true</optional>
-		</dependency>
-		<dependency>
-			<groupId>com.fasterxml.jackson.datatype</groupId>
-			<artifactId>jackson-datatype-jsr310</artifactId>
-		</dependency>
-		<dependency>
-			<groupId>com.fasterxml.jackson.core</groupId>
-			<artifactId>jackson-databind</artifactId>
-		</dependency>
-		<dependency>
-			<groupId>org.projectlombok</groupId>
-			<artifactId>lombok</artifactId>
-			<optional>true</optional>
-		</dependency>
-		<dependency>
-			<groupId>io.micrometer</groupId>
-			<artifactId>micrometer-core</artifactId>
-			<optional>true</optional>
-		</dependency>
-		<dependency>
-			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter-actuator</artifactId>
-			<optional>true</optional>
-		</dependency>
-		<dependency>
-			<groupId>com.networknt</groupId>
-			<artifactId>json-schema-validator</artifactId>
-			<version>1.3.3</version>
-		</dependency>
+    <!-- Shared dependency version overrides. Child modules inherit these entries
+         and don't need to repeat the Netty BOM import. -->
+    <dependencyManagement>
+        <dependencies>
+            <!-- Force all Netty artifacts to 4.1.129.Final to resolve:
+                 CVE-2025-55163 (CVSS 7.5) - MadeYouReset DDoS
+                 CVE-2025-58057 (CVSS 7.5) - codec-compression resource exhaustion
+                 CVE-2025-67735 (CVSS 6.5) - CRLF injection in HttpRequestEncoder
+                 CVE-2025-58056 (CVSS 7.5) - traffic amplification -->
+            <dependency>
+                <groupId>io.netty</groupId>
+                <artifactId>netty-bom</artifactId>
+                <version>4.1.129.Final</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
+    <distributionManagement>
+        <repository>
+            <id>central</id>
+            <url>https://central.sonatype.com/</url>
+        </repository>
+    </distributionManagement>
 
-		<!-- Test dependencies -->
-		<dependency>
-			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter-test</artifactId>
-			<scope>test</scope>
-		</dependency>
-		<dependency>
-			<groupId>io.projectreactor</groupId>
-			<artifactId>reactor-test</artifactId>
-			<scope>test</scope>
-		</dependency>
-                <dependency>
-                        <groupId>org.testcontainers</groupId>
-                        <artifactId>testcontainers</artifactId>
-                        <scope>test</scope>
-                </dependency>
-                <dependency>
-                        <groupId>org.testcontainers</groupId>
-                        <artifactId>junit-jupiter</artifactId>
-                        <scope>test</scope>
-                </dependency>
-	</dependencies>
-
-	<distributionManagement>
-		<repository>
-			<id>central</id>
-			<url>https://central.sonatype.com/</url>
-		</repository>
-	</distributionManagement>
-
-	<build>
-		<plugins>
-			<plugin>
-				<groupId>org.apache.maven.plugins</groupId>
-				<artifactId>maven-compiler-plugin</artifactId>
-				<configuration>
-					<annotationProcessorPaths>
-						<path>
-							<groupId>org.projectlombok</groupId>
-							<artifactId>lombok</artifactId>
-						</path>
-						<path>
-							<groupId>org.springframework.boot</groupId>
-							<artifactId>spring-boot-configuration-processor</artifactId>
-						</path>
-					</annotationProcessorPaths>
-				</configuration>
-			</plugin>
-			<plugin>
-				<groupId>org.apache.maven.plugins</groupId>
-				<artifactId>maven-surefire-plugin</artifactId>
-				<configuration>
-					<!-- Pass Docker socket environment vars into the forked test JVM
-					     so Testcontainers can find the Docker daemon on macOS with Docker Desktop -->
-					<environmentVariables>
-						<TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE>/var/run/docker.sock</TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE>
-						<DOCKER_HOST>unix:///var/run/docker.sock</DOCKER_HOST>
-						<DOCKER_API_VERSION>1.44</DOCKER_API_VERSION>
-						<TESTCONTAINERS_RYUK_DISABLED>true</TESTCONTAINERS_RYUK_DISABLED>
-					</environmentVariables>
-				</configuration>
-			</plugin>
-			<!-- Prevent spring-boot-starter-parent from repackaging this library as an executable JAR -->
-			<plugin>
-				<groupId>org.springframework.boot</groupId>
-				<artifactId>spring-boot-maven-plugin</artifactId>
-				<configuration>
-					<skip>true</skip>
-				</configuration>
-			</plugin>
-			<!-- Skip default deploy; publishing to Maven Central requires -P release
-			     which activates central-publishing-maven-plugin with the correct API -->
-			<plugin>
-				<groupId>org.apache.maven.plugins</groupId>
-				<artifactId>maven-deploy-plugin</artifactId>
-				<configuration>
-					<skip>true</skip>
-				</configuration>
-			</plugin>
-			<plugin>
-				<groupId>org.jacoco</groupId>
-				<artifactId>jacoco-maven-plugin</artifactId>
-				<version>0.8.12</version>
-				<executions>
-					<execution>
-						<id>prepare-agent</id>
-						<goals><goal>prepare-agent</goal></goals>
-					</execution>
-					<execution>
-						<id>report</id>
-						<phase>verify</phase>
-						<goals><goal>report</goal></goals>
-					</execution>
-				</executions>
-			</plugin>
-		</plugins>
-	</build>
-
-	<profiles>
-		<profile>
-			<id>release</id>
-			<build>
-				<plugins>
-					<!-- Generate -sources.jar -->
-					<plugin>
-						<groupId>org.apache.maven.plugins</groupId>
-						<artifactId>maven-source-plugin</artifactId>
-						<executions>
-							<execution>
-								<id>attach-sources</id>
-								<goals><goal>jar-no-fork</goal></goals>
-							</execution>
-						</executions>
-					</plugin>
-					<!-- Generate -javadoc.jar -->
-					<plugin>
-						<groupId>org.apache.maven.plugins</groupId>
-						<artifactId>maven-javadoc-plugin</artifactId>
-						<configuration>
-							<doclint>none</doclint>
-						</configuration>
-						<executions>
-							<execution>
-								<id>attach-javadocs</id>
-								<goals><goal>jar</goal></goals>
-							</execution>
-						</executions>
-					</plugin>
-					<!-- GPG-sign all artifacts (required by Maven Central) -->
-					<plugin>
-						<groupId>org.apache.maven.plugins</groupId>
-						<artifactId>maven-gpg-plugin</artifactId>
-						<version>3.2.4</version>
-						<executions>
-							<execution>
-								<id>sign-artifacts</id>
-								<phase>verify</phase>
-								<goals><goal>sign</goal></goals>
-								<configuration>
-									<gpgArguments>
-										<arg>--pinentry-mode</arg>
-										<arg>loopback</arg>
-									</gpgArguments>
-								</configuration>
-							</execution>
-						</executions>
-					</plugin>
-					<!-- Central Portal Publishing Plugin (replaces nexus-staging-maven-plugin) -->
-					<plugin>
-						<groupId>org.sonatype.central</groupId>
-						<artifactId>central-publishing-maven-plugin</artifactId>
-						<version>0.7.0</version>
-						<extensions>true</extensions>
-						<configuration>
-							<publishingServerId>central</publishingServerId>
-							<autoPublish>true</autoPublish>
-							<waitUntil>published</waitUntil>
-						</configuration>
-					</plugin>
-				</plugins>
-			</build>
-		</profile>
-	</profiles>
+    <!-- Release profile — activated explicitly with -P release when publishing
+         to Maven Central. Generates -sources.jar, -javadoc.jar, GPG signatures,
+         and invokes the Central Portal publishing plugin. -->
+    <profiles>
+        <profile>
+            <id>release</id>
+            <build>
+                <plugins>
+                    <!-- Generate -sources.jar -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <goals><goal>jar-no-fork</goal></goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <!-- Generate -javadoc.jar -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <configuration>
+                            <doclint>none</doclint>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <goals><goal>jar</goal></goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <!-- GPG-sign all artifacts (required by Maven Central) -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>3.2.4</version>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals><goal>sign</goal></goals>
+                                <configuration>
+                                    <gpgArguments>
+                                        <arg>--pinentry-mode</arg>
+                                        <arg>loopback</arg>
+                                    </gpgArguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <!-- Central Portal Publishing Plugin (replaces nexus-staging-maven-plugin) -->
+                    <plugin>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>0.7.0</version>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <publishingServerId>central</publishingServerId>
+                            <autoPublish>true</autoPublish>
+                            <waitUntil>published</waitUntil>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 
 </project>

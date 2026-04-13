@@ -10,6 +10,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.AutoConfigureBefore;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -48,8 +49,12 @@ import java.util.Optional;
  * </ul>
  *
  * <h3>Ordering</h3>
- * <p>Declared {@code @AutoConfigureBefore} {@link RedisConfig} and
- * {@link RacerAutoConfiguration} so that the no-op stubs are registered first.
+ * <p>Declared {@code @AutoConfigureAfter} {@link RacerAutoConfiguration} so that
+ * {@link com.cheetah.racer.config.RacerProperties} and
+ * {@link RacerListenerRegistrar} are already registered when the
+ * {@code @ConditionalOnBean} guards are evaluated.  Also declared
+ * {@code @AutoConfigureBefore} {@link RedisConfig} so that the no-op Redis stubs are
+ * registered before {@link RedisConfig} can create real infrastructure beans.
  * {@link RedisConfig} must therefore be annotated with {@code @ConditionalOnMissingBean}
  * on its template beans (see {@code RedisConfig.java}) so it skips creation when the
  * test stubs are already present.
@@ -67,7 +72,8 @@ import java.util.Optional;
  */
 @Slf4j
 @Configuration
-@AutoConfigureBefore({RedisConfig.class, RacerAutoConfiguration.class})
+@AutoConfigureBefore(RedisConfig.class)
+@AutoConfigureAfter(RacerAutoConfiguration.class)
 public class RacerTestAutoConfiguration {
 
     // ── No-op Redis infrastructure stubs ─────────────────────────────────────
@@ -139,7 +145,6 @@ public class RacerTestAutoConfiguration {
      */
     @Bean
     @Primary
-    @ConditionalOnBean(RacerProperties.class)
     public InMemoryRacerPublisherRegistry inMemoryRacerPublisherRegistry(
             RacerProperties racerProperties, ObjectMapper objectMapper) {
         log.info("[RACER-TEST] Registering InMemoryRacerPublisherRegistry as @Primary.");
@@ -164,7 +169,6 @@ public class RacerTestAutoConfiguration {
      * @return a configured test harness
      */
     @Bean
-    @ConditionalOnBean(RacerListenerRegistrar.class)
     public RacerTestHarness racerTestHarness(
             RacerListenerRegistrar listenerRegistrar,
             Optional<RacerStreamListenerRegistrar> streamRegistrar) {

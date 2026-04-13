@@ -193,12 +193,20 @@ public class RacerTestHarness {
     }
 
     /**
-     * Returns {@code true} if a stream listener registrar is available (i.e. at least
-     * one {@link com.cheetah.racer.annotation.RacerStreamListener} method was registered).
+     * Returns {@code true} if a stream listener registrar is available AND has at least
+     * one registered {@link com.cheetah.racer.annotation.RacerStreamListener} method.
+     *
+     * <p>Note: {@link com.cheetah.racer.stream.RacerStreamListenerRegistrar} is always
+     * present in the application context when {@link com.cheetah.racer.annotation.EnableRacer}
+     * is active. This method returns {@code false} when no
+     * {@link com.cheetah.racer.annotation.RacerStreamListener}-annotated methods have
+     * been discovered and registered, making it safe to use as a guard before calling
+     * {@link #fireAtStream}.
      *
      * @return {@code true} when {@link #fireAtStream} can be called without an error
      */
     public boolean hasStreamRegistrar() {
-        return streamRegistrar != null;
+        return streamRegistrar != null
+                && !streamRegistrar.getStreamListenerRegistrations().isEmpty();
     }
 }

@@ -337,6 +337,19 @@ Started RacerDemoApplication in X.XXX seconds
 | `racer.rate-limit.default-burst-size` | `200` | Default burst capacity (maximum token bucket size) (v1.3) |
 | `racer.rate-limit.channels.<alias>.permits-per-second` | — | Per-channel override for refill rate (v1.3) |
 | `racer.rate-limit.channels.<alias>.burst-size` | — | Per-channel override for burst capacity (v1.3) |
+| `racer.circuit-breaker.enabled` | `false` | Wrap each listener dispatch with a circuit breaker |
+| `racer.circuit-breaker.failure-rate-threshold` | `50` | % failure rate (1–100) that opens the circuit (global default) |
+| `racer.circuit-breaker.sliding-window-size` | `10` | Number of calls in the count-based sliding window (global default) |
+| `racer.circuit-breaker.wait-duration-in-open-state-seconds` | `30` | Seconds to stay OPEN before probing again (global default) |
+| `racer.circuit-breaker.permitted-calls-in-half-open-state` | `3` | Probe calls allowed in HALF_OPEN before closing or re-opening (global default) |
+| `racer.circuit-breaker.listeners.<id>.failure-rate-threshold` | — | Per-listener override for failure rate threshold; falls back to global when absent (v1.4) |
+| `racer.circuit-breaker.listeners.<id>.sliding-window-size` | — | Per-listener override for sliding window size; falls back to global when absent (v1.4) |
+| `racer.circuit-breaker.listeners.<id>.wait-duration-in-open-state-seconds` | — | Per-listener override for open-state wait duration; falls back to global when absent (v1.4) |
+| `racer.circuit-breaker.listeners.<id>.permitted-calls-in-half-open-state` | — | Per-listener override for HALF_OPEN probe count; falls back to global when absent (v1.4) |
+| `racer.backpressure.enabled` | `false` | Enable queue-fill back-pressure monitoring (`RacerBackPressureMonitor`) |
+| `racer.backpressure.queue-threshold` | `0.80` | Queue fill ratio (0.0–1.0) above which back-pressure is activated |
+| `racer.backpressure.check-interval-ms` | `1000` | How often (ms) the monitor checks the queue fill ratio |
+| `racer.backpressure.stream-poll-backoff-ms` | `2000` | Stream poll interval applied while back-pressure is active |
 | `racer.pubsub.concurrency` | `256` | Max in-flight Pub/Sub messages processed concurrently (R-11) |
 | `racer.poll.enabled` | `true` | Enable/disable all `@RacerPoll` pollers (R-11) |
 | `racer.request-reply.default-timeout` | `30s` | Default timeout for `@RacerRequestReply` calls |
@@ -679,6 +692,22 @@ public class OrderRouterConfig {
 | `drop()` | Discard and log at DEBUG (`id`, `channel`, truncated payload) | `DROPPED` |
 | `dropQuietly()` | Silently discard with no logging (for health-check pings, etc.) | `DROPPED` |
 | `dropToDlq()` | Route to the Dead Letter Queue (**recommended default route**) | `DROPPED_TO_DLQ` |
+
+**Dry-run testing your routing rules:**
+
+`RacerRouterService` exposes a `dryRun` method that evaluates all compiled rules against a synthetic message without publishing to any channel.
+
+```java
+// Evaluate all rule sources (PAYLOAD + SENDER + ID):
+RouteDecision decision = routerService.dryRun(payload, "my-service", "msg-abc");
+
+// Null arguments skip their respective rule source:
+RouteDecision payloadOnly = routerService.dryRun(payload, null, null);
+```
+
+> **Deprecation (v1.6.0):** The single-argument overload `dryRun(Object payload)` silently
+> skipped SENDER and ID rules and has been deprecated in favour of
+> `dryRun(Object, String, String)`. It will be removed in v2.0.0.
 
 ---
 
@@ -1647,6 +1676,59 @@ racer.rate-limit.channels.orders.burst-size=1000
 
 ---
 
+## Message Processing Pipeline
+
+`@RacerListener` and `@RacerStreamListener` share the same core building blocks, but the exact order differs slightly between Pub/Sub and Streams. The sequence below reflects the actual registrar code.
+
+### `@RacerListener` pipeline
+
+1. Redis Pub/Sub delivers the raw string payload.
+2. The message is deserialized into `RacerMessage`.
+3. Back-pressure is checked first; when active, the message is routed to DLQ.
+4. The listener's circuit breaker is checked next; open circuits skip the message.
+5. Deduplication runs when `racer.dedup.enabled=true`.
+6. Content routing runs when `RacerRouterService` is present.
+7. Router outcomes control the next step:
+    - `DROPPED` skips the message.
+    - `DROPPED_TO_DLQ` enqueues to DLQ.
+    - `FORWARDED` republishes and skips local handling.
+    - `FORWARDED_AND_PROCESS` republishes and continues locally.
+8. Interceptors run in order before the handler is invoked.
+9. Schema validation runs before argument resolution.
+10. The handler argument is resolved from `RacerMessage`, raw `String`, or a POJO via Jackson.
+11. The handler method executes on the listener scheduler.
+12. Success increments processed metrics; any failure increments failed metrics and enqueues the message to DLQ.
+
+### `@RacerStreamListener` pipeline
+
+1. Redis Streams delivers entries through `XREADGROUP`.
+2. The registrar reads the `data` field and deserializes it into `RacerMessage`.
+3. The listener's circuit breaker is checked first.
+4. Deduplication runs when `racer.dedup.enabled=true`.
+5. Interceptors run in order before the handler is invoked.
+6. Schema validation runs before argument resolution.
+7. The handler argument is resolved from `RacerMessage`, raw `String`, or a POJO via Jackson.
+8. The handler method executes on the bounded elastic scheduler.
+9. Successful handling ACKs the stream entry and increments processed metrics.
+10. Failures enqueue to DLQ and ACK the entry so the consumer group does not redeliver forever.
+
+### Always-active vs opt-in
+
+| Stage | Pub/Sub | Streams | Opt-in |
+|-------|---------|---------|--------|
+| Deserialize `RacerMessage` | Yes | Yes | No |
+| Circuit breaker | Yes | Yes | `racer.circuit-breaker.enabled=true` |
+| Deduplication | Yes | Yes | `racer.dedup.enabled=true` |
+| Interceptors | Yes | Yes | Register `RacerMessageInterceptor` beans |
+| Schema validation | Yes | Yes | Register `RacerSchemaRegistry` |
+| Routing | Yes | No | Register `RacerRouterService` |
+| Back-pressure gate | Yes | No | `RacerBackPressureMonitor` |
+
+> **Back-pressure recovery (v1.6.0):** When the queue drains below `racer.backpressure.queue-threshold`, the stream poll interval steps back down gradually — halving the excess each check cycle — rather than snapping immediately to the original value. Pub/Sub back-pressure is released on the first below-threshold tick. Example with `stream-poll-backoff-ms=800` and `consumer.poll-interval-ms=100`: 800 ms → 400 → 200 → 100 → fully recovered.
+| DLQ on failure | Yes | Yes | `racer.dlq.enabled=true` |
+
+---
+
 ## End-to-End Flows
 
 ### Flow 1 — Fire-and-Forget (Pub/Sub)
@@ -1836,6 +1918,18 @@ public Mono<StockEvent> reserveStock(StockRequest req) { ... }
 
 The maximum retry limit is controlled by `RedisChannels.MAX_RETRY_ATTEMPTS` (default: **3**).
 
+**`DeadLetterQueueService` API:**
+
+| Method | Description |
+|--------|-------------|
+| `enqueue(RacerMessage, Throwable)` | Push a failed message to the DLQ (LPUSH). |
+| `dequeue()` | Pop and return the oldest message from the DLQ (RPOP — FIFO order). |
+| `peekAll()` | Return all DLQ entries **oldest-first** (FIFO), matching `dequeue()` order. Corrupted entries are skipped with a `WARN` log. *(v1.6.0: changed from newest-first)* |
+| `size()` | Return the current number of DLQ entries. |
+| `clear()` | Remove all entries from the DLQ. |
+
+> **v1.6.0 behaviour change:** `peekAll()` now returns messages in FIFO order (oldest first), consistent with `dequeue()`. Code that previously relied on newest-first ordering from `peekAll()` must be updated.
+
 To trigger DLQ intentionally for testing, publish a message and have your `@RacerListener` throw an exception. Then inject `DeadLetterQueueService` to inspect entries or `DlqReprocessorService` to republish them.
 
 ---
@@ -2018,7 +2112,7 @@ All roadmap items through Phase 4 have been **fully implemented**.
 
 **What was implemented:**
 - `@RacerRoute` container annotation + `@RacerRouteRule` per-rule annotation (field, matches regex, to channel, sender)
-- `RacerRouterService` — scans all beans with `@RacerRoute` at startup via `@PostConstruct`, compiles regex patterns, exposes `route(msg)` and `dryRun()` methods
+- `RacerRouterService` — scans all beans with `@RacerRoute` at startup via `@PostConstruct`, compiles regex patterns, exposes `route(msg)`, `dryRun(Object, String, String)`, and the deprecated `dryRun(Object)` methods
 - `RacerListenerRegistrar` (BeanPostProcessor) — scans all beans for `@RacerListener` methods; routes to `RacerDeadLetterHandler` on failure
 **Key files:** `RacerRoute.java`, `RacerRouteRule.java`, `RacerRouterService.java`, `RacerFunctionalRouter.java`, `RoutePredicates.java`, `RouteHandlers.java`
 
