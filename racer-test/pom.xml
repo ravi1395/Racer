@@ -79,3 +79,6 @@
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-core</artifactId>
             <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>
