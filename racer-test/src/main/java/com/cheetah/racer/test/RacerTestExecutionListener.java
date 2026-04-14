@@ -2,6 +2,7 @@ package com.cheetah.racer.test;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.lang.NonNull;
 import org.springframework.test.context.TestContext;
 import org.springframework.test.context.TestExecutionListener;
 
@@ -49,7 +50,7 @@ public class RacerTestExecutionListener implements TestExecutionListener {
      * @param testContext the Spring test context for the test class
      */
     @Override
-    public void beforeTestClass(TestContext testContext) {
+    public void beforeTestClass(@NonNull TestContext testContext) {
         // Read the @RacerTest annotation from the test class (may be inherited).
         RacerTest racerTest = testContext.getTestClass().getAnnotation(RacerTest.class);
         if (racerTest == null || racerTest.channels().length == 0) {

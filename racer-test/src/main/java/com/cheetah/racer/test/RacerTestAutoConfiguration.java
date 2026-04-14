@@ -1,28 +1,29 @@
 package com.cheetah.racer.test;
 
-import com.cheetah.racer.config.RacerAutoConfiguration;
-import com.cheetah.racer.config.RacerProperties;
-import com.cheetah.racer.config.RedisConfig;
-import com.cheetah.racer.listener.RacerListenerRegistrar;
-import com.cheetah.racer.stream.RacerStreamListenerRegistrar;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.extern.slf4j.Slf4j;
+import java.util.Optional;
+
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.AutoConfigureBefore;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;
+
+import com.cheetah.racer.config.RacerAutoConfiguration;
+import com.cheetah.racer.config.RacerProperties;
+import com.cheetah.racer.config.RedisConfig;
+import com.cheetah.racer.listener.RacerListenerRegistrar;
+import com.cheetah.racer.stream.RacerStreamListenerRegistrar;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-
-import java.util.Optional;
 
 /**
  * Spring Boot auto-configuration for the Racer test support module.
@@ -93,7 +94,7 @@ public class RacerTestAutoConfiguration {
      */
     @Bean("reactiveStringRedisTemplate")
     @ConditionalOnMissingBean(name = "reactiveStringRedisTemplate")
-    @SuppressWarnings({"unchecked", "rawtypes"})
+    @SuppressWarnings("unchecked")
     public ReactiveRedisTemplate<String, String> noOpReactiveStringRedisTemplate() {
         log.info("[RACER-TEST] No real ReactiveRedisTemplate found — registering no-op stub.");
         return (ReactiveRedisTemplate<String, String>)
@@ -118,7 +119,6 @@ public class RacerTestAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(ReactiveRedisMessageListenerContainer.class)
-    @SuppressWarnings({"unchecked", "rawtypes"})
     public ReactiveRedisMessageListenerContainer noOpReactiveRedisMessageListenerContainer() {
         log.info("[RACER-TEST] No real ReactiveRedisMessageListenerContainer found — "
                 + "registering no-op stub (subscriptions will use RacerTestHarness.fireAt).");

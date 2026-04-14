@@ -1,11 +1,11 @@
 package com.cheetah.racer.test;
 
+import java.util.UUID;
+
 import com.cheetah.racer.model.PriorityLevel;
 import com.cheetah.racer.model.RacerMessage;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-
-import java.util.UUID;
 
 /**
  * Fluent builder for constructing {@link RacerMessage} instances in tests.

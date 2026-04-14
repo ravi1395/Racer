@@ -1,12 +1,33 @@
 package com.cheetah.racer.stream;
 
+import java.lang.reflect.Method;
+import java.time.Duration;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+
+import org.springframework.aop.framework.AopProxyUtils;
+import org.springframework.beans.BeansException;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.data.redis.connection.stream.Consumer;
+import org.springframework.data.redis.connection.stream.MapRecord;
+import org.springframework.data.redis.connection.stream.ReadOffset;
+import org.springframework.data.redis.connection.stream.RecordId;
+import org.springframework.data.redis.connection.stream.StreamOffset;
+import org.springframework.data.redis.connection.stream.StreamReadOptions;
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
+import org.springframework.lang.NonNull;
+import org.springframework.lang.Nullable;
+
 import com.cheetah.racer.annotation.ConcurrencyMode;
 import com.cheetah.racer.annotation.RacerStreamListener;
 import com.cheetah.racer.circuitbreaker.RacerCircuitBreaker;
-import com.cheetah.racer.exception.RacerConfigurationException;
 import com.cheetah.racer.circuitbreaker.RacerCircuitBreakerRegistry;
 import com.cheetah.racer.config.RacerProperties;
 import com.cheetah.racer.dedup.RacerDedupService;
+import com.cheetah.racer.exception.RacerConfigurationException;
 import com.cheetah.racer.listener.AbstractRacerRegistrar;
 import com.cheetah.racer.listener.InterceptorContext;
 import com.cheetah.racer.listener.RacerDeadLetterHandler;
@@ -18,27 +39,13 @@ import com.cheetah.racer.model.RacerMessage;
 import com.cheetah.racer.schema.RacerSchemaRegistry;
 import com.cheetah.racer.util.RacerChannelResolver;
 import com.fasterxml.jackson.databind.ObjectMapper;
+
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.aop.framework.AopProxyUtils;
-import org.springframework.beans.BeansException;
-import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.data.redis.connection.stream.*;
-import org.springframework.data.redis.core.ReactiveRedisTemplate;
-import org.springframework.lang.NonNull;
-import org.springframework.lang.Nullable;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 import reactor.util.retry.Retry;
-
-import java.lang.reflect.Method;
-import java.time.Duration;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * {@link BeanPostProcessor} that discovers methods annotated with {@link RacerStreamListener}
@@ -466,7 +473,8 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
                             })
                             .onErrorResume(ex -> {
                                 incrementFailed(listenerId);
-                                Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+                                Throwable root = ex.getCause();
+                                Throwable cause = root != null ? root : ex;
                                 if (cb != null) cb.onFailure();
                                 log.error("[RACER-STREAM-LISTENER] '{}' failed entry {}: {}", listenerId, recordId, cause.getMessage(), cause);
                                 return enqueueDeadLetter(intercepted, cause)
@@ -682,7 +690,8 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
                             })
                             .onErrorResume(ex -> {
                                 incrementFailed(listenerId);
-                                Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+                                Throwable root = ex.getCause();
+                                Throwable cause = root != null ? root : ex;
                                 if (cb != null) cb.onFailure();
                                 return enqueueDeadLetter(intercepted, cause).then();
                             });
@@ -691,10 +700,12 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
 
     // ── Stats ─────────────────────────────────────────────────────────────────
 
+    @Override
     public long getProcessedCount(String listenerId) {
         return super.getProcessedCount(listenerId);
     }
 
+    @Override
     public long getFailedCount(String listenerId) {
         return super.getFailedCount(listenerId);
     }

@@ -1,13 +1,15 @@
 package com.cheetah.racer.test;
 
+import java.util.Map;
+
+import org.springframework.lang.Nullable;
+
 import com.cheetah.racer.listener.RacerListenerRegistrar;
 import com.cheetah.racer.model.RacerMessage;
 import com.cheetah.racer.stream.RacerStreamListenerRegistrar;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.lang.Nullable;
-import reactor.core.publisher.Mono;
 
-import java.util.Map;
+import lombok.extern.slf4j.Slf4j;
+import reactor.core.publisher.Mono;
 
 /**
  * Test utility that dispatches synthetic {@link RacerMessage} instances directly into the
@@ -144,7 +146,8 @@ public class RacerTestHarness {
      *         registrar is present
      */
     public Mono<Void> fireAtStream(String streamKey, String group, RacerMessage message) {
-        if (streamRegistrar == null) {
+        RacerStreamListenerRegistrar registrar = streamRegistrar;
+        if (registrar == null) {
             return Mono.error(new IllegalStateException(
                     "[RACER-TEST] No RacerStreamListenerRegistrar is present in the application "
                     + "context. Ensure at least one @RacerStreamListener method is defined and "
@@ -152,7 +155,7 @@ public class RacerTestHarness {
         }
         log.debug("[RACER-TEST] Firing message id='{}' at stream listener key='{}' group='{}'",
                 message.getId(), streamKey, group);
-        return streamRegistrar.processMessage(streamKey, group, message);
+        return registrar.processMessage(streamKey, group, message);
     }
 
     /**
@@ -168,13 +171,14 @@ public class RacerTestHarness {
      * @return a {@link Mono} that completes when the pipeline finishes
      */
     public Mono<Void> fireAtStreamListener(String listenerId, RacerMessage message) {
-        if (streamRegistrar == null) {
+        RacerStreamListenerRegistrar registrar = streamRegistrar;
+        if (registrar == null) {
             return Mono.error(new IllegalStateException(
                     "[RACER-TEST] No RacerStreamListenerRegistrar is present in the application context."));
         }
         log.debug("[RACER-TEST] Firing message id='{}' at stream listener id='{}'",
                 message.getId(), listenerId);
-        return streamRegistrar.processMessage(listenerId, message);
+        return registrar.processMessage(listenerId, message);
     }
 
     // ── Introspection ──────────────────────────────────────────────────────────

@@ -67,6 +67,9 @@
     <!-- Shared properties inherited by all child modules. -->
     <properties>
         <java.version>21</java.version>
+        <!-- Upgrade Lombok to 1.18.38 to support JDK 24/25 (fixes TypeTag::UNKNOWN
+             incompatibility that causes false errors in VS Code language server). -->
+        <lombok.version>1.18.38</lombok.version>
         <!-- Security: force Netty upgrade to fix CVE-2025-55163, CVE-2025-58056,
              CVE-2025-58057, CVE-2025-67735. Spring Boot BOM honours this property
              for most Netty artifacts; the explicit netty-bom import below catches
