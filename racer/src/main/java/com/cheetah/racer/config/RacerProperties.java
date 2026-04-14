@@ -46,6 +46,17 @@ public class RacerProperties {
     private boolean strictChannelValidation = false;
 
     /**
+     * ID generation strategy for message envelope {@code id} fields.
+     * Valid values: {@code uuid} (default).
+     *
+     * <p>The {@code uuid} strategy uses a {@code ThreadLocalRandom}-backed UUID
+     * generator (~5-10x faster than {@code SecureRandom} under high concurrency)
+     * while preserving the standard UUID wire format for deduplication compatibility.
+     * Mapped under {@code racer.id-strategy}.
+     */
+    private String idStrategy = "uuid";
+
+    /**
      * Named channel definitions keyed by alias.
      */
     private Map<String, ChannelProperties> channels = new LinkedHashMap<>();

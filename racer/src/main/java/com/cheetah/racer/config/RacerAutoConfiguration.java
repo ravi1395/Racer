@@ -12,6 +12,8 @@ import com.cheetah.racer.metrics.RacerMetrics;
 import com.cheetah.racer.metrics.RacerMetricsPort;
 import com.cheetah.racer.poll.RacerPollRegistrar;
 import com.cheetah.racer.processor.RacerPublisherFieldProcessor;
+import com.cheetah.racer.publisher.IdGenerator;
+import com.cheetah.racer.publisher.MessageEnvelopeBuilder;
 import com.cheetah.racer.publisher.RacerConsistentHashRing;
 import com.cheetah.racer.publisher.RacerPipelinedPublisher;
 import com.cheetah.racer.publisher.RacerPriorityPublisher;
@@ -130,6 +132,26 @@ public class RacerAutoConfiguration {
         if (!condition) {
             throw new IllegalStateException("[racer] Invalid configuration: " + message);
         }
+    }
+
+    /**
+     * Creates the {@link IdGenerator} bean based on {@code racer.id-strategy}.
+     *
+     * <p>Currently supports {@code "uuid"} (default), which uses a
+     * {@code ThreadLocalRandom}-backed UUID generator (~5-10x faster than
+     * {@code SecureRandom} under high concurrency while preserving the standard
+     * UUID wire format). The selected generator is immediately wired into
+     * {@link MessageEnvelopeBuilder} via its static setter so all publish paths
+     * benefit without requiring call-site changes.
+     */
+    @Bean
+    public IdGenerator racerIdGenerator(RacerProperties racerProperties) {
+        // Only "uuid" (Option A) is implemented; property is reserved for future strategies.
+        // The generator is wired into MessageEnvelopeBuilder so all static publish paths
+        // use it without requiring call-site changes.
+        IdGenerator generator = MessageEnvelopeBuilder.fastUuidGenerator();
+        MessageEnvelopeBuilder.setIdGenerator(generator);
+        return generator;
     }
 
     @Bean

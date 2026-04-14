@@ -3,6 +3,7 @@ package com.cheetah.racer.publisher;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -11,7 +12,10 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import reactor.test.StepVerifier;
 
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -30,6 +34,15 @@ class MessageEnvelopeBuilderTest {
     void setUp() {
         objectMapper = new ObjectMapper();
         objectMapper.registerModule(new JavaTimeModule());
+        // Restore the default fast-UUID generator before each test so that
+        // setIdGenerator() tests do not bleed into unrelated assertions.
+        MessageEnvelopeBuilder.setIdGenerator(MessageEnvelopeBuilder.fastUuidGenerator());
+    }
+
+    @AfterEach
+    void tearDown() {
+        // Always restore default so the static field is clean for the next test class.
+        MessageEnvelopeBuilder.setIdGenerator(MessageEnvelopeBuilder.fastUuidGenerator());
     }
 
     // ── Helper ────────────────────────────────────────────────────────────────
@@ -220,5 +233,62 @@ class MessageEnvelopeBuilderTest {
         } catch (Exception e) {
             throw new AssertionError(e);
         }
+    }
+
+    // ── IdGenerator — fast UUID strategy (Option A) ───────────────────────────
+
+    @Test
+    void fastUuidGenerator_producesValidUuidFormat() {
+        IdGenerator gen = MessageEnvelopeBuilder.fastUuidGenerator();
+        String id = gen.generate();
+        // Standard UUID pattern: 8-4-4-4-12 lowercase hex
+        assertThat(id).matches("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
+    }
+
+    @Test
+    void fastUuidGenerator_producesUniqueIds() {
+        IdGenerator gen = MessageEnvelopeBuilder.fastUuidGenerator();
+        Set<String> ids = new HashSet<>();
+        for (int i = 0; i < 1000; i++) {
+            ids.add(gen.generate());
+        }
+        // All 1000 generated IDs must be unique
+        assertThat(ids).hasSize(1000);
+    }
+
+    @Test
+    void setIdGenerator_customGeneratorUsedInEnvelope() throws Exception {
+        // Replace the active generator with a deterministic stub
+        AtomicInteger counter = new AtomicInteger(0);
+        MessageEnvelopeBuilder.setIdGenerator(() -> "test-id-" + counter.incrementAndGet());
+
+        String json = MessageEnvelopeBuilder.build(objectMapper, "ch", "s", "data").block();
+        Map<String, Object> env = parse(json);
+
+        assertThat(env.get("id")).isEqualTo("test-id-1");
+    }
+
+    @Test
+    void setIdGenerator_appliedAcrossAllBuildMethods() throws Exception {
+        MessageEnvelopeBuilder.setIdGenerator(() -> "fixed-id");
+
+        String pubSubJson  = MessageEnvelopeBuilder.build(objectMapper, "ch", "s", "data").block();
+        String priorityJson = MessageEnvelopeBuilder.buildWithPriority(objectMapper, "ch", "s", "HIGH", "data").block();
+        String streamJson   = MessageEnvelopeBuilder.buildStream(objectMapper, "s", "data").block();
+        String traceJson    = MessageEnvelopeBuilder.buildWithTrace(objectMapper, "ch", "s", "data", false, null, null).block();
+
+        assertThat(parse(pubSubJson).get("id")).isEqualTo("fixed-id");
+        assertThat(parse(priorityJson).get("id")).isEqualTo("fixed-id");
+        assertThat(parse(streamJson).get("id")).isEqualTo("fixed-id");
+        assertThat(parse(traceJson).get("id")).isEqualTo("fixed-id");
+    }
+
+    @Test
+    void build_explicitMessageId_takesPrecedenceOverGenerator() throws Exception {
+        // Even when a custom generator is set, an explicit messageId must not be overridden
+        MessageEnvelopeBuilder.setIdGenerator(() -> "generated-id");
+
+        String json = MessageEnvelopeBuilder.build(objectMapper, "ch", "s", "data", false, "explicit-id").block();
+        assertThat(parse(json).get("id")).isEqualTo("explicit-id");
     }
 }
