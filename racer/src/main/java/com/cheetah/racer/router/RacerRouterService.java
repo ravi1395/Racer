@@ -1,5 +1,14 @@
 package com.cheetah.racer.router;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Pattern;
+
+import org.springframework.context.ApplicationContext;
+import org.springframework.lang.Nullable;
+
 import com.cheetah.racer.annotation.RacerRoute;
 import com.cheetah.racer.annotation.RacerRouteRule;
 import com.cheetah.racer.annotation.RouteAction;
@@ -15,41 +24,44 @@ import com.cheetah.racer.router.dsl.RacerFunctionalRouter;
 import com.cheetah.racer.router.dsl.RouteContext;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.ApplicationContext;
-import org.springframework.lang.Nullable;
-
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Map;
-import java.util.regex.Pattern;
 
 /**
  * Content-based message router.
  *
- * <p>Scans all Spring beans annotated with {@link RacerRoute} at startup and compiles
- * a list of routing rules.  When {@link #route(RacerMessage)} is called it evaluates
- * rules against the message payload and re-publishes to the first matching channel alias.
- * The method is fully reactive: it returns a {@code Mono<RouteDecision>} so that publish
+ * <p>
+ * Scans all Spring beans annotated with {@link RacerRoute} at startup and
+ * compiles
+ * a list of routing rules. When {@link #route(RacerMessage)} is called it
+ * evaluates
+ * rules against the message payload and re-publishes to the first matching
+ * channel alias.
+ * The method is fully reactive: it returns a {@code Mono<RouteDecision>} so
+ * that publish
  * failures propagate to the caller's DLQ handler rather than being swallowed.
  *
  * <h3>Thread safety</h3>
- * Rules are populated once at startup via {@link #init()} and never modified afterwards,
+ * Rules are populated once at startup via {@link #init()} and never modified
+ * afterwards,
  * so the list is safe to read concurrently without locking.
  *
  * <h3>Routing logic</h3>
  * <ol>
- *   <li>Annotation rules ({@code @RacerRoute} / {@code @RacerRouteRule}) are evaluated first.</li>
- *   <li>If no annotation rule matched, each {@link RacerFunctionalRouter} bean is evaluated in
- *       bean-registration order; the first non-{@link RouteDecision#PASS} decision wins.</li>
- *   <li>Both systems can coexist in the same application — migrate incrementally.</li>
- *   <li>If nothing matches, {@link RouteDecision#PASS} is returned and the message is
- *       processed by the local listener unchanged.</li>
+ * <li>Annotation rules ({@code @RacerRoute} / {@code @RacerRouteRule}) are
+ * evaluated first.</li>
+ * <li>If no annotation rule matched, each {@link RacerFunctionalRouter} bean is
+ * evaluated in
+ * bean-registration order; the first non-{@link RouteDecision#PASS} decision
+ * wins.</li>
+ * <li>Both systems can coexist in the same application — migrate
+ * incrementally.</li>
+ * <li>If nothing matches, {@link RouteDecision#PASS} is returned and the
+ * message is
+ * processed by the local listener unchanged.</li>
  * </ol>
  */
 @Slf4j
@@ -66,28 +78,28 @@ public class RacerRouterService {
     private final List<RacerFunctionalRouter> functionalRouters = new ArrayList<>();
 
     public RacerRouterService(ApplicationContext applicationContext,
-                              RacerPublisherRegistry registry,
-                              ObjectMapper objectMapper) {
+            RacerPublisherRegistry registry,
+            ObjectMapper objectMapper) {
         this(applicationContext, registry, objectMapper, null, null);
     }
 
     public RacerRouterService(ApplicationContext applicationContext,
-                              RacerPublisherRegistry registry,
-                              ObjectMapper objectMapper,
-                              @Nullable RacerPriorityPublisher priorityPublisher) {
+            RacerPublisherRegistry registry,
+            ObjectMapper objectMapper,
+            @Nullable RacerPriorityPublisher priorityPublisher) {
         this(applicationContext, registry, objectMapper, priorityPublisher, null);
     }
 
     public RacerRouterService(ApplicationContext applicationContext,
-                              RacerPublisherRegistry registry,
-                              ObjectMapper objectMapper,
-                              @Nullable RacerPriorityPublisher priorityPublisher,
-                              @Nullable RacerMetricsPort racerMetrics) {
+            RacerPublisherRegistry registry,
+            ObjectMapper objectMapper,
+            @Nullable RacerPriorityPublisher priorityPublisher,
+            @Nullable RacerMetricsPort racerMetrics) {
         this.applicationContext = applicationContext;
-        this.registry           = registry;
-        this.objectMapper       = objectMapper;
-        this.priorityPublisher  = priorityPublisher;
-        this.racerMetrics       = racerMetrics != null ? racerMetrics : new NoOpRacerMetrics();
+        this.registry = registry;
+        this.objectMapper = objectMapper;
+        this.priorityPublisher = priorityPublisher;
+        this.racerMetrics = racerMetrics != null ? racerMetrics : NoOpRacerMetrics.INSTANCE;
     }
 
     // -----------------------------------------------------------------------
@@ -98,7 +110,8 @@ public class RacerRouterService {
     public void init() {
         applicationContext.getBeansWithAnnotation(RacerRoute.class).forEach((beanName, bean) -> {
             RacerRoute annotation = resolveAnnotation(bean);
-            if (annotation == null) return;
+            if (annotation == null)
+                return;
 
             List<CompiledRouteRule> compiled = compile(annotation);
             globalRules.addAll(compiled);
@@ -119,12 +132,10 @@ public class RacerRouterService {
             log.info("[racer-router] {} annotation routing rule(s) active.", globalRules.size());
         }
 
-        Map<String, RacerFunctionalRouter> dsls =
-                applicationContext.getBeansOfType(RacerFunctionalRouter.class);
+        Map<String, RacerFunctionalRouter> dsls = applicationContext.getBeansOfType(RacerFunctionalRouter.class);
         functionalRouters.addAll(dsls.values());
-        functionalRouters.forEach(r ->
-                log.info("[racer-router] Functional router registered: '{}' with {} rule(s).",
-                        r.getName(), r.entries().size()));
+        functionalRouters.forEach(r -> log.info("[racer-router] Functional router registered: '{}' with {} rule(s).",
+                r.getName(), r.entries().size()));
 
         if (globalRules.isEmpty() && functionalRouters.isEmpty()) {
             log.debug("[racer-router] No routing rules found — router is inactive.");
@@ -145,7 +156,8 @@ public class RacerRouterService {
 
     /**
      * Compiles an array of {@link RacerRouteRule} annotations.
-     * Exposed as a static helper so callers without a service reference can compile rules.
+     * Exposed as a static helper so callers without a service reference can compile
+     * rules.
      */
     public static List<CompiledRouteRule> compile(RacerRouteRule[] rules) {
         return Arrays.stream(rules)
@@ -167,13 +179,17 @@ public class RacerRouterService {
      * Evaluates all routing rules against {@code message} and returns a
      * {@link Mono} emitting the {@link RouteDecision}.
      *
-     * <p>Annotation-based global rules are checked first.  If none match, each
-     * registered {@link RacerFunctionalRouter} is evaluated in bean-registration order
-     * until a non-{@link RouteDecision#PASS} decision is produced.  Publishing is fully
+     * <p>
+     * Annotation-based global rules are checked first. If none match, each
+     * registered {@link RacerFunctionalRouter} is evaluated in bean-registration
+     * order
+     * until a non-{@link RouteDecision#PASS} decision is produced. Publishing is
+     * fully
      * chained into the reactive pipeline so Redis failures propagate to the caller.
      *
      * @param message the inbound message
-     * @return a {@code Mono} that emits the routing decision when all publish I/O completes
+     * @return a {@code Mono} that emits the routing decision when all publish I/O
+     *         completes
      */
     public Mono<RouteDecision> route(RacerMessage message) {
         if (message.isRouted()) {
@@ -186,8 +202,10 @@ public class RacerRouterService {
                 : evaluate(message, globalRules);
 
         return annotationStep.flatMap(decision -> {
-            if (decision != RouteDecision.PASS) return Mono.just(decision);
-            if (functionalRouters.isEmpty())    return Mono.just(RouteDecision.PASS);
+            if (decision != RouteDecision.PASS)
+                return Mono.just(decision);
+            if (functionalRouters.isEmpty())
+                return Mono.just(RouteDecision.PASS);
             return evaluateFunctionalReactive(message);
         });
     }
@@ -196,7 +214,8 @@ public class RacerRouterService {
      * Evaluates {@code rules} (which may be per-listener or global) against
      * {@code message} reactively.
      *
-     * <p>Rule matching is synchronous (CPU-bound); only the publish I/O step is async.
+     * <p>
+     * Rule matching is synchronous (CPU-bound); only the publish I/O step is async.
      *
      * @param message the inbound message
      * @param rules   ordered list of compiled rules to evaluate
@@ -204,7 +223,8 @@ public class RacerRouterService {
      *         {@link RouteDecision#PASS} if no rule matched
      */
     public Mono<RouteDecision> evaluate(RacerMessage message, List<CompiledRouteRule> rules) {
-        if (rules.isEmpty()) return Mono.just(RouteDecision.PASS);
+        if (rules.isEmpty())
+            return Mono.just(RouteDecision.PASS);
         if (message.isRouted()) {
             log.debug("[racer-router] Skipping already-routed message id={} in evaluate()", message.getId());
             return Mono.just(RouteDecision.PASS);
@@ -212,7 +232,7 @@ public class RacerRouterService {
 
         // Rule matching is CPU-bound — done synchronously inside Mono.defer
         return Mono.defer(() -> {
-            JsonNode[] payloadNode = {null}; // parsed lazily
+            JsonNode[] payloadNode = { null }; // parsed lazily
 
             for (CompiledRouteRule rule : rules) {
                 String candidate;
@@ -226,7 +246,8 @@ public class RacerRouterService {
                             payloadNode[0] = objectMapper.readTree(toJsonString(message.getPayload()));
                         }
                         JsonNode fieldNode = payloadNode[0].get(rule.field());
-                        if (fieldNode == null) continue;
+                        if (fieldNode == null)
+                            continue;
                         candidate = fieldNode.asText();
                     }
                 } catch (Exception ex) {
@@ -243,7 +264,10 @@ public class RacerRouterService {
         });
     }
 
-    /** Evaluates functional routers reactively, executing deferred publishes after the handler. */
+    /**
+     * Evaluates functional routers reactively, executing deferred publishes after
+     * the handler.
+     */
     private Mono<RouteDecision> evaluateFunctionalReactive(RacerMessage message) {
         return Mono.defer(() -> {
             for (RacerFunctionalRouter router : functionalRouters) {
@@ -259,13 +283,17 @@ public class RacerRouterService {
     }
 
     /**
-     * Reactive version of {@link #applyAction}: returns a {@code Mono} that completes
-     * once the publish has been handed off to Redis, propagating any Redis error to the
+     * Reactive version of {@link #applyAction}: returns a {@code Mono} that
+     * completes
+     * once the publish has been handed off to Redis, propagating any Redis error to
+     * the
      * caller instead of silently swallowing it.
      */
     private Mono<RouteDecision> applyActionReactive(RacerMessage message, CompiledRouteRule rule) {
-        if (rule.action() == RouteAction.DROP)         return Mono.just(RouteDecision.DROPPED);
-        if (rule.action() == RouteAction.DROP_TO_DLQ) return Mono.just(RouteDecision.DROPPED_TO_DLQ);
+        if (rule.action() == RouteAction.DROP)
+            return Mono.just(RouteDecision.DROPPED);
+        if (rule.action() == RouteAction.DROP_TO_DLQ)
+            return Mono.just(RouteDecision.DROPPED_TO_DLQ);
 
         RacerChannelPublisher publisher = registry.getPublisher(rule.alias());
         String sender = rule.sender().isBlank() ? message.getSender() : rule.sender();
@@ -288,10 +316,13 @@ public class RacerRouterService {
     }
 
     /**
-     * Dry-run: evaluates all routing rules against a synthetic message constructed from
+     * Dry-run: evaluates all routing rules against a synthetic message constructed
+     * from
      * the provided values, without publishing to any channel.
      *
-     * <p>Unlike the deprecated {@link #dryRun(Object)}, this variant correctly evaluates
+     * <p>
+     * Unlike the deprecated {@link #dryRun(Object)}, this variant correctly
+     * evaluates
      * rules with {@code source = SENDER} and {@code source = ID} in addition to
      * {@code PAYLOAD} rules. Pass {@code null} for any source you want to exclude.
      *
@@ -301,30 +332,32 @@ public class RacerRouterService {
      *                  may be {@code null} to skip SENDER rules
      * @param messageId message ID tested against {@code ID} rules;
      *                  may be {@code null} to skip ID rules
-     * @return the {@link RouteDecision} from the first matching rule, or {@code null}
+     * @return the {@link RouteDecision} from the first matching rule, or
+     *         {@code null}
      *         if no rule matches
      */
     public RouteDecision dryRun(@Nullable Object payload,
-                                @Nullable String sender,
-                                @Nullable String messageId) {
+            @Nullable String sender,
+            @Nullable String messageId) {
         for (CompiledRouteRule rule : globalRules) {
             try {
                 boolean matched = switch (rule.source()) {
                     case PAYLOAD -> {
-                        if (payload == null) yield false;
+                        if (payload == null)
+                            yield false;
                         JsonNode node = objectMapper.readTree(toJsonString(payload));
                         JsonNode fieldNode = node.get(rule.field());
                         yield fieldNode != null && rule.pattern().matcher(fieldNode.asText()).matches();
                     }
                     case SENDER -> sender != null && rule.pattern().matcher(sender).matches();
-                    case ID     -> messageId != null && rule.pattern().matcher(messageId).matches();
+                    case ID -> messageId != null && rule.pattern().matcher(messageId).matches();
                 };
                 if (matched) {
                     return switch (rule.action()) {
-                        case FORWARD             -> RouteDecision.FORWARDED;
+                        case FORWARD -> RouteDecision.FORWARDED;
                         case FORWARD_AND_PROCESS -> RouteDecision.FORWARDED_AND_PROCESS;
-                        case DROP                -> RouteDecision.DROPPED;
-                        case DROP_TO_DLQ         -> RouteDecision.DROPPED_TO_DLQ;
+                        case DROP -> RouteDecision.DROPPED;
+                        case DROP_TO_DLQ -> RouteDecision.DROPPED_TO_DLQ;
                     };
                 }
             } catch (Exception ex) {
@@ -340,17 +373,17 @@ public class RacerRouterService {
 
         globalRules.forEach(r -> {
             if (r.source() == RouteMatchSource.PAYLOAD) {
-                descriptions.add(String.format("[annotation] source=PAYLOAD field='%s' matches='%s' → alias='%s' action=%s",
-                        r.field(), r.pattern().pattern(), r.alias(), r.action()));
+                descriptions
+                        .add(String.format("[annotation] source=PAYLOAD field='%s' matches='%s' → alias='%s' action=%s",
+                                r.field(), r.pattern().pattern(), r.alias(), r.action()));
             } else {
                 descriptions.add(String.format("[annotation] source=%s matches='%s' → alias='%s' action=%s",
                         r.source(), r.pattern().pattern(), r.alias(), r.action()));
             }
         });
 
-        functionalRouters.forEach(router ->
-                descriptions.add(String.format("[functional] router='%s' rules=%d",
-                        router.getName(), router.entries().size())));
+        functionalRouters.forEach(router -> descriptions.add(String.format("[functional] router='%s' rules=%d",
+                router.getName(), router.entries().size())));
 
         return List.copyOf(descriptions);
     }
@@ -364,7 +397,8 @@ public class RacerRouterService {
     // -----------------------------------------------------------------------
 
     private String toJsonString(Object value) throws Exception {
-        if (value instanceof String s) return s;
+        if (value instanceof String s)
+            return s;
         return objectMapper.writeValueAsString(value);
     }
 
@@ -377,10 +411,15 @@ public class RacerRouterService {
      * {@link RacerPublisherRegistry}, mirroring what {@link #applyAction} does for
      * annotation-based rules.
      *
-     * <p>Publish operations are <em>deferred</em>: calling {@code publishTo()} enqueues
-     * a {@code Mono<Void>} rather than subscribing immediately.  The deferred operations
-     * are executed as a reactive chain when {@link #executePendingPublishes()} is called
-     * from {@link #evaluateFunctionalReactive}, ensuring errors surface instead of being
+     * <p>
+     * Publish operations are <em>deferred</em>: calling {@code publishTo()}
+     * enqueues
+     * a {@code Mono<Void>} rather than subscribing immediately. The deferred
+     * operations
+     * are executed as a reactive chain when {@link #executePendingPublishes()} is
+     * called
+     * from {@link #evaluateFunctionalReactive}, ensuring errors surface instead of
+     * being
      * silently swallowed.
      */
     private final class DefaultRouteContext implements RouteContext {
@@ -388,7 +427,9 @@ public class RacerRouterService {
         private final RacerMessage message;
         private final List<Mono<Void>> pendingPublishes = new ArrayList<>();
 
-        DefaultRouteContext(RacerMessage message) { this.message = message; }
+        DefaultRouteContext(RacerMessage message) {
+            this.message = message;
+        }
 
         @Override
         public void publishTo(String alias, RacerMessage msg) {
@@ -407,8 +448,7 @@ public class RacerRouterService {
                                 log.error("[racer-router] DSL routing failed for id={} → '{}': {}",
                                         message.getId(), alias, ex.getMessage());
                             })
-                            .then()
-            );
+                            .then());
         }
 
         @Override
@@ -419,17 +459,20 @@ public class RacerRouterService {
                 String sender = msg.getSender();
                 pendingPublishes.add(
                         pp.publish(channelName, msg.getPayload(), sender, PriorityLevel.fromString(level))
-                                .doOnNext(count -> log.debug("[racer-router] DSL priority-forwarded id={} → '{}:priority:{}' ({} subscriber(s))",
+                                .doOnNext(count -> log.debug(
+                                        "[racer-router] DSL priority-forwarded id={} → '{}:priority:{}' ({} subscriber(s))",
                                         message.getId(), alias, level, count))
                                 .doOnError(ex -> {
                                     racerMetrics.recordFailed(alias, ex.getClass().getSimpleName());
-                                    log.error("[racer-router] DSL priority routing failed for id={} → '{}:priority:{}': {}",
+                                    log.error(
+                                            "[racer-router] DSL priority routing failed for id={} → '{}:priority:{}': {}",
                                             message.getId(), alias, level, ex.getMessage());
                                 })
-                                .then()
-                );
+                                .then());
             } else {
-                log.warn("[racer-router] publishToWithPriority called but no RacerPriorityPublisher configured — falling back to standard publish for id={}", message.getId());
+                log.warn(
+                        "[racer-router] publishToWithPriority called but no RacerPriorityPublisher configured — falling back to standard publish for id={}",
+                        message.getId());
                 publishTo(alias, msg);
             }
         }
@@ -439,12 +482,16 @@ public class RacerRouterService {
          * The first error propagates to the caller (no silent swallowing).
          */
         Mono<Void> executePendingPublishes() {
-            if (pendingPublishes.isEmpty()) return Mono.empty();
+            if (pendingPublishes.isEmpty())
+                return Mono.empty();
             return Flux.concat(pendingPublishes).then();
         }
     }
 
-    /** Handles CGLIB-proxied beans where {@code getClass().getAnnotation()} returns null. */
+    /**
+     * Handles CGLIB-proxied beans where {@code getClass().getAnnotation()} returns
+     * null.
+     */
     private RacerRoute resolveAnnotation(Object bean) {
         RacerRoute ann = bean.getClass().getAnnotation(RacerRoute.class);
         if (ann == null && bean.getClass().getSuperclass() != null) {

@@ -39,6 +39,7 @@
     <modules>
         <module>racer</module>
         <module>racer-test</module>
+        <module>racer-benchmark</module>
     </modules>
 
     <licenses>

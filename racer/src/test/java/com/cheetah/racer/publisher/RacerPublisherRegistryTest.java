@@ -1,8 +1,8 @@
 package com.cheetah.racer.publisher;
 
-import com.cheetah.racer.config.RacerProperties;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -10,9 +10,9 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 
-import java.util.Map;
-
-import static org.assertj.core.api.Assertions.assertThat;
+import com.cheetah.racer.config.RacerProperties;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 @ExtendWith(MockitoExtension.class)
 class RacerPublisherRegistryTest {
@@ -143,14 +143,15 @@ class RacerPublisherRegistryTest {
     }
 
     // ------------------------------------------------------------------
-    // Full constructor with Optional<RacerMetrics>
+    // Full constructor with RacerMetricsPort
     // ------------------------------------------------------------------
 
     @Test
     void fullConstructor_withMetrics_buildsRegistrySuccessfully() {
-        com.cheetah.racer.metrics.RacerMetrics metrics = org.mockito.Mockito.mock(com.cheetah.racer.metrics.RacerMetrics.class);
+        com.cheetah.racer.metrics.RacerMetrics metrics = org.mockito.Mockito
+                .mock(com.cheetah.racer.metrics.RacerMetrics.class);
         RacerPublisherRegistry reg = new RacerPublisherRegistry(
-                properties, redisTemplate, objectMapper, java.util.Optional.of(metrics),
+                properties, redisTemplate, objectMapper, metrics,
                 java.util.Optional.empty(), java.util.Optional.empty());
         reg.init();
         assertThat(reg.getPublisher(null)).isNotNull();

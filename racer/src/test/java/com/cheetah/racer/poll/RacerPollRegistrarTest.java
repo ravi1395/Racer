@@ -1,32 +1,34 @@
 package com.cheetah.racer.poll;
 
-import com.cheetah.racer.annotation.RacerPoll;
-import com.cheetah.racer.publisher.RacerChannelPublisher;
-import com.cheetah.racer.publisher.RacerPublisherRegistry;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.mockito.junit.jupiter.MockitoSettings;
-import org.mockito.quality.Strictness;
-import org.springframework.mock.env.MockEnvironment;
-import org.springframework.test.util.ReflectionTestUtils;
-import reactor.core.publisher.Mono;
-import reactor.test.StepVerifier;
-
 import java.lang.reflect.Method;
 import java.time.LocalDateTime;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import org.mockito.Mock;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
+import org.springframework.mock.env.MockEnvironment;
+import org.springframework.test.util.ReflectionTestUtils;
+
+import com.cheetah.racer.annotation.RacerPoll;
+import com.cheetah.racer.metrics.NoOpRacerMetrics;
+import com.cheetah.racer.publisher.RacerChannelPublisher;
+import com.cheetah.racer.publisher.RacerPublisherRegistry;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+
+import reactor.core.publisher.Mono;
+import reactor.test.StepVerifier;
 
 /**
  * Unit tests for {@link RacerPollRegistrar}.
@@ -107,8 +109,10 @@ class RacerPollRegistrarTest {
 
     // ── Mocks and collaborators ───────────────────────────────────────────────
 
-    @Mock RacerPublisherRegistry publisherRegistry;
-    @Mock RacerChannelPublisher publisher;
+    @Mock
+    RacerPublisherRegistry publisherRegistry;
+    @Mock
+    RacerChannelPublisher publisher;
 
     ObjectMapper objectMapper;
     RacerPollRegistrar registrar;
@@ -122,7 +126,7 @@ class RacerPollRegistrarTest {
         when(publisher.publishAsync(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString()))
                 .thenReturn(Mono.just(1L));
 
-        registrar = new RacerPollRegistrar(publisherRegistry, objectMapper, null);
+        registrar = new RacerPollRegistrar(publisherRegistry, objectMapper, NoOpRacerMetrics.INSTANCE);
         registrar.setEnvironment(new MockEnvironment());
     }
 
@@ -304,7 +308,8 @@ class RacerPollRegistrarTest {
         DirectChannelBean bean = new DirectChannelBean();
         registrar.postProcessAfterInitialization(bean, "directChannelBean");
 
-        // publisherRegistry.getPublisher(channel) is called synchronously during registration
+        // publisherRegistry.getPublisher(channel) is called synchronously during
+        // registration
         verify(publisherRegistry).getPublisher("racer:orders");
         registrar.stop();
     }
@@ -314,7 +319,8 @@ class RacerPollRegistrarTest {
     @Test
     void registerPoll_withNeitherChannelNorRef_logsErrorAndSkips() {
         NeitherChannelBean bean = new NeitherChannelBean();
-        // Should not throw, should not call the registry, should not register any subscription
+        // Should not throw, should not call the registry, should not register any
+        // subscription
         registrar.postProcessAfterInitialization(bean, "neitherChannelBean");
         registrar.stop();
     }
@@ -327,7 +333,8 @@ class RacerPollRegistrarTest {
         CronPollBean bean = new CronPollBean();
         registrar.postProcessAfterInitialization(bean, "cronPollBean");
 
-        // The cron ticker Flux is assembled synchronously during registerPoll — lines 122-126
+        // The cron ticker Flux is assembled synchronously during registerPoll — lines
+        // 122-126
         verify(publisherRegistry).getPublisher("orders");
         registrar.stop();
     }
@@ -355,12 +362,15 @@ class RacerPollRegistrarTest {
     void publish_withSerializationFailure_returnsEmptyMono() throws Exception {
         ObjectMapper failingMapper = mock(ObjectMapper.class);
         when(failingMapper.writeValueAsString(any()))
-                .thenThrow(new com.fasterxml.jackson.core.JsonProcessingException("ser-fail") {});
+                .thenThrow(new com.fasterxml.jackson.core.JsonProcessingException("ser-fail") {
+                });
 
-        RacerPollRegistrar failingRegistrar = new RacerPollRegistrar(publisherRegistry, failingMapper, null);
+        RacerPollRegistrar failingRegistrar = new RacerPollRegistrar(publisherRegistry, failingMapper,
+                NoOpRacerMetrics.INSTANCE);
         failingRegistrar.setEnvironment(new MockEnvironment());
 
-        // Call publish() with a non-String payload so objectMapper.writeValueAsString is invoked
+        // Call publish() with a non-String payload so objectMapper.writeValueAsString
+        // is invoked
         Object nonStringPayload = new java.util.concurrent.atomic.AtomicBoolean(true);
 
         @SuppressWarnings("unchecked")

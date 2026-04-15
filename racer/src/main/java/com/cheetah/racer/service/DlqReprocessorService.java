@@ -1,33 +1,40 @@
 package com.cheetah.racer.service;
 
+import java.util.concurrent.atomic.AtomicLong;
+
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
+import org.springframework.lang.Nullable;
+
 import com.cheetah.racer.RedisChannels;
 import com.cheetah.racer.metrics.NoOpRacerMetrics;
-import com.cheetah.racer.metrics.RacerMetrics;
 import com.cheetah.racer.metrics.RacerMetricsPort;
 import com.cheetah.racer.model.DeadLetterMessage;
 import com.cheetah.racer.model.RacerMessage;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.redis.core.ReactiveRedisTemplate;
-import org.springframework.lang.Nullable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
-import java.util.concurrent.atomic.AtomicLong;
-
 /**
- * Service to reprocess messages from the Dead Letter Queue by republishing them back
+ * Service to reprocess messages from the Dead Letter Queue by republishing them
+ * back
  * to their original channel, where they will be picked up by the appropriate
  * {@code @RacerListener} or {@code @RacerStreamListener} for normal processing.
  *
- * <p>This service uses a <em>republish-only</em> strategy: instead of invoking a
- * {@code MessageProcessor} directly (which couples the reprocessor to application logic),
+ * <p>
+ * This service uses a <em>republish-only</em> strategy: instead of invoking a
+ * {@code MessageProcessor} directly (which couples the reprocessor to
+ * application logic),
  * failed messages are re-injected into the Redis Pub/Sub pipeline so that all
- * annotation-driven consumers handle them naturally through the normal processing path.
+ * annotation-driven consumers handle them naturally through the normal
+ * processing path.
  *
- * <p>Registered as a Spring bean by {@link com.cheetah.racer.config.RacerAutoConfiguration}.
+ * <p>
+ * Registered as a Spring bean by
+ * {@link com.cheetah.racer.config.RacerAutoConfiguration}.
  */
 @Slf4j
 public class DlqReprocessorService {
@@ -37,23 +44,24 @@ public class DlqReprocessorService {
     private final ObjectMapper objectMapper;
     private final RacerMetricsPort racerMetrics;
 
-    private final AtomicLong republishedCount       = new AtomicLong(0);
+    private final AtomicLong republishedCount = new AtomicLong(0);
     private final AtomicLong permanentlyFailedCount = new AtomicLong(0);
 
     public DlqReprocessorService(
             DeadLetterQueueService dlqService,
             ReactiveRedisTemplate<String, String> redisTemplate,
             ObjectMapper objectMapper,
-            @Nullable RacerMetrics racerMetrics) {
-        this.dlqService     = dlqService;
-        this.redisTemplate  = redisTemplate;
-        this.objectMapper   = objectMapper;
-        this.racerMetrics   = racerMetrics != null ? racerMetrics : new NoOpRacerMetrics();
+            @Nullable RacerMetricsPort racerMetrics) {
+        this.dlqService = dlqService;
+        this.redisTemplate = redisTemplate;
+        this.objectMapper = objectMapper;
+        this.racerMetrics = racerMetrics != null ? racerMetrics : NoOpRacerMetrics.INSTANCE;
     }
 
     /**
      * Republish a single DLQ message back to its original Pub/Sub channel.
-     * Returns the number of Pub/Sub subscribers that received the message (0 if DLQ is empty).
+     * Returns the number of Pub/Sub subscribers that received the message (0 if DLQ
+     * is empty).
      */
     public Mono<Long> republishOne() {
         return dlqService.dequeue()
@@ -81,7 +89,8 @@ public class DlqReprocessorService {
     private static final int BATCH_CHUNK = 100;
 
     private Mono<Long> republishBatch(long remaining) {
-        if (remaining <= 0) return Mono.just(0L);
+        if (remaining <= 0)
+            return Mono.just(0L);
 
         // Iterative expand: dequeue up to BATCH_CHUNK per iteration, accumulate count
         return Flux.range(0, (int) Math.min(remaining, BATCH_CHUNK))
@@ -124,13 +133,19 @@ public class DlqReprocessorService {
                             racerMetrics.recordDlqReprocessed();
                         }))
                 .onErrorResume(JsonProcessingException.class, e -> {
-                    log.error("[DLQ-REPROCESSOR] Failed to serialize message id={}: {}", message.getId(), e.getMessage());
+                    log.error("[DLQ-REPROCESSOR] Failed to serialize message id={}: {}", message.getId(),
+                            e.getMessage());
                     return Mono.error(e);
                 });
     }
 
     // ── Accessors ─────────────────────────────────────────────────────────────
 
-    public long getRepublishedCount() { return republishedCount.get(); }
-    public long getPermanentlyFailedCount() { return permanentlyFailedCount.get(); }
+    public long getRepublishedCount() {
+        return republishedCount.get();
+    }
+
+    public long getPermanentlyFailedCount() {
+        return permanentlyFailedCount.get();
+    }
 }

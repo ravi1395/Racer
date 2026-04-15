@@ -33,7 +33,6 @@ import com.cheetah.racer.listener.InterceptorContext;
 import com.cheetah.racer.listener.RacerDeadLetterHandler;
 import com.cheetah.racer.listener.RacerMessageInterceptor;
 import com.cheetah.racer.metrics.NoOpRacerMetrics;
-import com.cheetah.racer.metrics.RacerMetrics;
 import com.cheetah.racer.metrics.RacerMetricsPort;
 import com.cheetah.racer.model.RacerMessage;
 import com.cheetah.racer.schema.RacerSchemaRegistry;
@@ -48,19 +47,24 @@ import reactor.core.scheduler.Schedulers;
 import reactor.util.retry.Retry;
 
 /**
- * {@link BeanPostProcessor} that discovers methods annotated with {@link RacerStreamListener}
- * and registers them as consumer-group readers for Redis Streams at application startup.
+ * {@link BeanPostProcessor} that discovers methods annotated with
+ * {@link RacerStreamListener}
+ * and registers them as consumer-group readers for Redis Streams at application
+ * startup.
  *
  * <h3>Processing pipeline (per stream entry)</h3>
  * <ol>
- *   <li>Read up to {@code batchSize} entries per poll via {@code XREADGROUP}.</li>
- *   <li>Parse the {@code data} field of each entry into a {@link RacerMessage} envelope.</li>
- *   <li>Validate against schema if {@link RacerSchemaRegistry} is available.</li>
- *   <li>Resolve method argument by declared parameter type (same rules as {@link
- *       com.cheetah.racer.listener.RacerListenerRegistrar}).</li>
- *   <li>Invoke the annotated method on {@code boundedElastic} scheduler.</li>
- *   <li>On success: ACK the entry, increment processed counter.</li>
- *   <li>On failure: ACK the entry (prevent infinite redelivery) + enqueue to DLQ.</li>
+ * <li>Read up to {@code batchSize} entries per poll via
+ * {@code XREADGROUP}.</li>
+ * <li>Parse the {@code data} field of each entry into a {@link RacerMessage}
+ * envelope.</li>
+ * <li>Validate against schema if {@link RacerSchemaRegistry} is available.</li>
+ * <li>Resolve method argument by declared parameter type (same rules as {@link
+ * com.cheetah.racer.listener.RacerListenerRegistrar}).</li>
+ * <li>Invoke the annotated method on {@code boundedElastic} scheduler.</li>
+ * <li>On success: ACK the entry, increment processed counter.</li>
+ * <li>On failure: ACK the entry (prevent infinite redelivery) + enqueue to
+ * DLQ.</li>
  * </ol>
  *
  * @see RacerStreamListener
@@ -69,13 +73,14 @@ import reactor.util.retry.Retry;
 public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
 
     private static final String DEFAULT_DATA_FIELD = "data";
-    private static final int    GROUP_CREATION_RETRIES = 5;
+    private static final int GROUP_CREATION_RETRIES = 5;
 
     private final ReactiveRedisTemplate<String, String> redisTemplate;
     private final ObjectMapper objectMapper;
 
-    private final RacerMetricsPort            racerMetrics;
-    @Nullable private final RacerSchemaRegistry   racerSchemaRegistry;
+    private final RacerMetricsPort racerMetrics;
+    @Nullable
+    private final RacerSchemaRegistry racerSchemaRegistry;
 
     // ── Phase 3 optional extensions ─────────────────────────────────────────
 
@@ -92,13 +97,17 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
     private ObjectProvider<RacerCircuitBreakerRegistry> circuitBreakerRegistryProvider;
 
     /**
-     * When non-zero, overrides the annotation-defined poll interval for all stream listeners.
+     * When non-zero, overrides the annotation-defined poll interval for all stream
+     * listeners.
      * Set by {@link com.cheetah.racer.backpressure.RacerBackPressureMonitor}.
      * Value 0 means “use the annotation value”.
      */
     private final AtomicLong backPressurePollOverrideMs = new AtomicLong(0);
 
-    /** (streamKey, group) pairs that have been registered, used by {@link RacerConsumerLagMonitor}. */
+    /**
+     * (streamKey, group) pairs that have been registered, used by
+     * {@link RacerConsumerLagMonitor}.
+     */
     private final Map<String, String> trackedStreamGroups = new ConcurrentHashMap<>();
 
     /**
@@ -118,13 +127,19 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
      * @param dedupEnabled whether deduplication is active for this listener
      */
     public record StreamListenerRegistration(Object bean, Method method, String streamKey,
-                                             String group, boolean dedupEnabled) {}
+            String group, boolean dedupEnabled) {
+    }
 
-    /** When set, newly registered streams are automatically tracked for consumer lag. */
+    /**
+     * When set, newly registered streams are automatically tracked for consumer
+     * lag.
+     */
     @Nullable
     private volatile RacerConsumerLagMonitor consumerLagMonitor;
 
-    /** Ordered list of message interceptors applied before every handler invocation. */
+    /**
+     * Ordered list of message interceptors applied before every handler invocation.
+     */
     private volatile List<RacerMessageInterceptor> interceptors = Collections.emptyList();
 
     /**
@@ -191,18 +206,20 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
             ReactiveRedisTemplate<String, String> redisTemplate,
             ObjectMapper objectMapper,
             RacerProperties racerProperties,
-            @Nullable RacerMetrics racerMetrics,
+            @Nullable RacerMetricsPort racerMetrics,
             @Nullable RacerSchemaRegistry racerSchemaRegistry,
             @Nullable RacerDeadLetterHandler deadLetterHandler) {
         super(racerProperties, deadLetterHandler);
-        this.redisTemplate      = redisTemplate;
-        this.objectMapper       = objectMapper;
-        this.racerMetrics       = racerMetrics != null ? racerMetrics : new NoOpRacerMetrics();
+        this.redisTemplate = redisTemplate;
+        this.objectMapper = objectMapper;
+        this.racerMetrics = racerMetrics != null ? racerMetrics : NoOpRacerMetrics.INSTANCE;
         this.racerSchemaRegistry = racerSchemaRegistry;
     }
 
     @Override
-    protected String logPrefix() { return "RACER-STREAM-LISTENER"; }
+    protected String logPrefix() {
+        return "RACER-STREAM-LISTENER";
+    }
 
     // ── BeanPostProcessor ────────────────────────────────────────────────────
 
@@ -226,31 +243,34 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
         String rawStreamKey = resolve(ann.streamKey());
         String streamKeyRef = resolve(ann.streamKeyRef());
 
-        // In strict mode, verify that a non-blank streamKeyRef maps to a configured alias.
-        // This catches typos like @RacerStreamListener(streamKeyRef="ordres") at startup.
+        // In strict mode, verify that a non-blank streamKeyRef maps to a configured
+        // alias.
+        // This catches typos like @RacerStreamListener(streamKeyRef="ordres") at
+        // startup.
         if (!streamKeyRef.isBlank()
                 && racerProperties.isStrictChannelValidation()
                 && !racerProperties.getChannels().containsKey(streamKeyRef)) {
             throw new RacerConfigurationException(
                     "@RacerStreamListener(streamKeyRef=\"" + streamKeyRef + "\") on "
-                    + beanName + "." + method.getName() + "() — alias not found in racer.channels.*. "
-                    + "Defined aliases: " + racerProperties.getChannels().keySet() + ".");
+                            + beanName + "." + method.getName() + "() — alias not found in racer.channels.*. "
+                            + "Defined aliases: " + racerProperties.getChannels().keySet() + ".");
         }
 
-        String streamKey    = RacerChannelResolver.resolveStreamKey(
+        String streamKey = RacerChannelResolver.resolveStreamKey(
                 rawStreamKey, streamKeyRef, racerProperties, logPrefix());
 
         if (streamKey.isEmpty()) {
-            log.warn("[RACER-STREAM-LISTENER] {}.{}() has @RacerStreamListener but no streamKey/streamKeyRef — skipped.",
+            log.warn(
+                    "[RACER-STREAM-LISTENER] {}.{}() has @RacerStreamListener but no streamKey/streamKeyRef — skipped.",
                     beanName, method.getName());
             return;
         }
 
         String listenerId = resolveListenerId(
                 ann.id().isEmpty() ? "" : resolve(ann.id()), beanName, method);
-        String group      = ann.group();
-        int    concurrencyN = ann.mode() == ConcurrencyMode.SEQUENTIAL ? 1 : Math.max(1, ann.concurrency());
-        int    batchSize    = ann.batchSize();
+        String group = ann.group();
+        int concurrencyN = ann.mode() == ConcurrencyMode.SEQUENTIAL ? 1 : Math.max(1, ann.concurrency());
+        int batchSize = ann.batchSize();
         Duration pollInterval = Duration.ofMillis(ann.pollIntervalMs());
 
         method.setAccessible(true);
@@ -270,7 +290,8 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
         streamListenerRegistrations.put(listenerId,
                 new StreamListenerRegistration(bean, method, streamKey, group, dedupEnabled));
 
-        log.info("[RACER-STREAM-LISTENER] Registering {}.{}() <- stream '{}' group='{}' mode={} concurrency={} dedup={}",
+        log.info(
+                "[RACER-STREAM-LISTENER] Registering {}.{}() <- stream '{}' group='{}' mode={} concurrency={} dedup={}",
                 beanName, method.getName(), streamKey, group, ann.mode(), concurrencyN, dedupEnabled);
 
         final String finalStreamKey = streamKey;
@@ -288,7 +309,8 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
                         Disposable d = buildPollLoop(bean, method, finalStreamKey, group,
                                 consumerName, batchSize, pollInterval, finalListenerId, dedupEnabled)
                                 .subscribe(
-                                        n -> {},
+                                        n -> {
+                                        },
                                         ex -> log.error("[RACER-STREAM-LISTENER] Consumer '{}' errored: {}",
                                                 consumerName, ex.getMessage()));
                         subscriptions.add(d);
@@ -303,9 +325,9 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
     // ── Polling loop ─────────────────────────────────────────────────────────
 
     private Flux<Void> buildPollLoop(Object bean, Method method,
-                                     String streamKey, String group, String consumer,
-                                     int batchSize, Duration pollInterval, String listenerId,
-                                     boolean dedupEnabled) {
+            String streamKey, String group, String consumer,
+            int batchSize, Duration pollInterval, String listenerId,
+            boolean dedupEnabled) {
         return Flux.defer(() -> pollOnce(bean, method, streamKey, group, consumer, batchSize, listenerId, dedupEnabled))
                 .repeatWhen(completed -> completed.flatMap(v -> {
                     long overrideMs = backPressurePollOverrideMs.get();
@@ -322,28 +344,31 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
                     // Non-blocking mode: sleep between polls to avoid busy-spin
                     return Mono.delay(pollInterval);
                 }))
-                .onErrorContinue((ex, o) ->
-                        log.error("[RACER-STREAM-LISTENER] Poll error on '{}': {}", streamKey, ex.getMessage()));
+                .onErrorContinue((ex, o) -> log.error("[RACER-STREAM-LISTENER] Poll error on '{}': {}", streamKey,
+                        ex.getMessage()));
     }
 
-    @SuppressWarnings({"unchecked", "null"})
+    @SuppressWarnings({ "unchecked", "null" })
     private Flux<Void> pollOnce(Object bean, Method method,
-                                String streamKey, String group, String consumer,
-                                int batchSize, String listenerId, boolean dedupEnabled) {
-        // Build read options: count controls batch size; block() enables Redis-side blocking
-        // so the consumer wakes up instantly when new messages arrive instead of busy-polling.
+            String streamKey, String group, String consumer,
+            int batchSize, String listenerId, boolean dedupEnabled) {
+        // Build read options: count controls batch size; block() enables Redis-side
+        // blocking
+        // so the consumer wakes up instantly when new messages arrive instead of
+        // busy-polling.
         long blockMs = racerProperties.getConsumer().getBlockMillis();
         StreamReadOptions readOptions = blockMs > 0
                 ? StreamReadOptions.empty().count(batchSize).block(Duration.ofMillis(blockMs))
                 : StreamReadOptions.empty().count(batchSize);
-        StreamOffset<String> offset   = StreamOffset.create(streamKey, ReadOffset.lastConsumed());
+        StreamOffset<String> offset = StreamOffset.create(streamKey, ReadOffset.lastConsumed());
         Consumer redisConsumer = Consumer.from(group, consumer);
 
         return redisTemplate
                 .opsForStream()
                 .read(redisConsumer, readOptions, offset)
                 .onErrorResume(ex -> {
-                    log.debug("[RACER-STREAM-LISTENER] XREADGROUP on '{}' returned empty or error: {}", streamKey, ex.getMessage());
+                    log.debug("[RACER-STREAM-LISTENER] XREADGROUP on '{}' returned empty or error: {}", streamKey,
+                            ex.getMessage());
                     return Flux.empty();
                 })
                 .flatMap(record -> {
@@ -357,15 +382,16 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
     }
 
     private Mono<Void> processRecord(Object bean, Method method,
-                                     String streamKey, String group,
-                                     MapRecord<String, Object, Object> record, String listenerId,
-                                     boolean dedupEnabled) {
+            String streamKey, String group,
+            MapRecord<String, Object, Object> record, String listenerId,
+            boolean dedupEnabled) {
         RecordId recordId = record.getId();
         Map<Object, Object> fields = record.getValue();
 
         // 0a. Circuit breaker gate
         RacerCircuitBreaker cb = getCircuitBreakerRegistry() != null
-                ? getCircuitBreakerRegistry().getOrCreate(listenerId) : null;
+                ? getCircuitBreakerRegistry().getOrCreate(listenerId)
+                : null;
         if (cb != null && !cb.isCallPermitted()) {
             log.debug("[RACER-STREAM-LISTENER] '{}' circuit {} — skipping record {}",
                     listenerId, cb.getState(), recordId);
@@ -376,7 +402,8 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
         // The data field carries the serialized RacerMessage envelope
         Object raw = fields.get(DEFAULT_DATA_FIELD);
         if (raw == null) {
-            log.warn("[RACER-STREAM-LISTENER] Record {} on '{}' missing '{}' field — skipped", recordId, streamKey, DEFAULT_DATA_FIELD);
+            log.warn("[RACER-STREAM-LISTENER] Record {} on '{}' missing '{}' field — skipped", recordId, streamKey,
+                    DEFAULT_DATA_FIELD);
             return RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, recordId);
         }
 
@@ -385,7 +412,8 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
         try {
             message = objectMapper.readValue(envelopeJson, RacerMessage.class);
         } catch (Exception e) {
-            log.error("[RACER-STREAM-LISTENER] '{}' — failed to deserialize entry {}: {}", listenerId, recordId, e.getMessage());
+            log.error("[RACER-STREAM-LISTENER] '{}' — failed to deserialize entry {}: {}", listenerId, recordId,
+                    e.getMessage());
             incrementFailed(listenerId);
             return RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, recordId);
         }
@@ -407,9 +435,9 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
     }
 
     private Mono<Void> processChecked(Object bean, Method method,
-                                      String streamKey, String group,
-                                      MapRecord<String, Object, Object> record, String listenerId,
-                                      RacerMessage message, @Nullable RacerCircuitBreaker cb) {
+            String streamKey, String group,
+            MapRecord<String, Object, Object> record, String listenerId,
+            RacerMessage message, @Nullable RacerCircuitBreaker cb) {
         RecordId recordId = record.getId();
 
         // Schema validation
@@ -417,37 +445,45 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
             try {
                 racerSchemaRegistry.validateForConsume(streamKey, message.getPayload());
             } catch (Exception e) {
-                log.warn("[RACER-STREAM-LISTENER] '{}' schema validation failed for {}: {}", listenerId, recordId, e.getMessage());
-                if (cb != null) cb.onFailure();
+                log.warn("[RACER-STREAM-LISTENER] '{}' schema validation failed for {}: {}", listenerId, recordId,
+                        e.getMessage());
+                if (cb != null)
+                    cb.onFailure();
                 return enqueueDeadLetter(message, e)
                         .then(RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, recordId))
                         .doOnTerminate(() -> incrementFailed(listenerId));
             }
         }
 
-        // Resolve argument — most failures here are JSON deserialization errors caused by bad
-        // producer payloads; log at WARN (not ERROR) and include the target type + payload
-        // preview so the problem is immediately diagnosable without reading raw Redis entries.
+        // Resolve argument — most failures here are JSON deserialization errors caused
+        // by bad
+        // producer payloads; log at WARN (not ERROR) and include the target type +
+        // payload
+        // preview so the problem is immediately diagnosable without reading raw Redis
+        // entries.
         Object arg;
         try {
             arg = resolveArgument(method, message);
         } catch (Exception e) {
             String paramTypeName = method.getParameterCount() > 0
-                    ? method.getParameterTypes()[0].getSimpleName() : "unknown";
+                    ? method.getParameterTypes()[0].getSimpleName()
+                    : "unknown";
             String payload = message.getPayload();
             String preview = payload != null
-                    ? payload.substring(0, Math.min(200, payload.length())) : "<null>";
+                    ? payload.substring(0, Math.min(200, payload.length()))
+                    : "<null>";
             log.warn("[RACER-STREAM-LISTENER] '{}' — failed to deserialize payload to {} for entry {}: {}. "
                     + "Message will be forwarded to DLQ. Payload preview: {}",
                     listenerId, paramTypeName, recordId, e.getMessage(), preview);
-            if (cb != null) cb.onFailure();
+            if (cb != null)
+                cb.onFailure();
             return enqueueDeadLetter(message, e)
                     .then(RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, recordId))
                     .doOnTerminate(() -> incrementFailed(listenerId));
         }
 
-        final Object resolvedArg  = arg;
-        final boolean isNoArg     = method.getParameterCount() == 0;
+        final Object resolvedArg = arg;
+        final boolean isNoArg = method.getParameterCount() == 0;
 
         // Interceptor chain → invoke handler
         return buildInterceptorChain(message, listenerId, streamKey, method)
@@ -458,8 +494,11 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
                         try {
                             finalArg = resolveArgument(method, intercepted);
                         } catch (Exception e) {
-                            log.error("[RACER-STREAM-LISTENER] '{}' — cannot resolve argument after intercept for {}: {}", listenerId, recordId, e.getMessage());
-                            if (cb != null) cb.onFailure();
+                            log.error(
+                                    "[RACER-STREAM-LISTENER] '{}' — cannot resolve argument after intercept for {}: {}",
+                                    listenerId, recordId, e.getMessage());
+                            if (cb != null)
+                                cb.onFailure();
                             return enqueueDeadLetter(intercepted, e)
                                     .then(RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, recordId))
                                     .doOnTerminate(() -> incrementFailed(listenerId));
@@ -474,7 +513,8 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
                                     : method.invoke(bean, finalArg))
                             .subscribeOn(Schedulers.boundedElastic())
                             .flatMap(result -> {
-                                if (result instanceof Mono<?> mono) return mono.then();
+                                if (result instanceof Mono<?> mono)
+                                    return mono.then();
                                 return Mono.<Void>empty();
                             });
 
@@ -482,7 +522,8 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
                             .then(RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, recordId))
                             .doOnSuccess(v -> {
                                 incrementProcessed(listenerId);
-                                if (cb != null) cb.onSuccess();
+                                if (cb != null)
+                                    cb.onSuccess();
                                 racerMetrics.recordConsumed(streamKey, listenerId);
                                 log.debug("[RACER-STREAM-LISTENER] '{}' processed entry {}", listenerId, recordId);
                             })
@@ -490,8 +531,10 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
                                 incrementFailed(listenerId);
                                 Throwable root = ex.getCause();
                                 Throwable cause = root != null ? root : ex;
-                                if (cb != null) cb.onFailure();
-                                log.error("[RACER-STREAM-LISTENER] '{}' failed entry {}: {}", listenerId, recordId, cause.getMessage(), cause);
+                                if (cb != null)
+                                    cb.onFailure();
+                                log.error("[RACER-STREAM-LISTENER] '{}' failed entry {}: {}", listenerId, recordId,
+                                        cause.getMessage(), cause);
                                 return enqueueDeadLetter(intercepted, cause)
                                         .then(RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, recordId));
                             });
@@ -502,8 +545,9 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
 
     /** Builds the ordered interceptor chain around a single message. */
     private Mono<RacerMessage> buildInterceptorChain(RacerMessage message,
-                                                      String listenerId, String streamKey, Method method) {
-        if (interceptors.isEmpty()) return Mono.just(message);
+            String listenerId, String streamKey, Method method) {
+        if (interceptors.isEmpty())
+            return Mono.just(message);
         InterceptorContext ctx = new InterceptorContext(listenerId, streamKey, method);
         Mono<RacerMessage> chain = Mono.just(message);
         for (RacerMessageInterceptor interceptor : interceptors) {
@@ -517,23 +561,32 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
     }
 
     private Object resolveArgument(Method method, RacerMessage message) throws Exception {
-        if (method.getParameterCount() == 0) return null;
+        if (method.getParameterCount() == 0)
+            return null;
         Class<?> paramType = method.getParameterTypes()[0];
-        if (RacerMessage.class.isAssignableFrom(paramType)) return message;
-        if (String.class.equals(paramType)) return message.getPayload();
+        if (RacerMessage.class.isAssignableFrom(paramType))
+            return message;
+        if (String.class.equals(paramType))
+            return message.getPayload();
         return objectMapper.readValue(message.getPayload(), paramType);
     }
 
     private String resolve(String value) {
-        if (value == null || value.isEmpty()) return value == null ? "" : value;
-        try { return environment.resolvePlaceholders(value); } catch (Exception e) { return value; }
+        if (value == null || value.isEmpty())
+            return value == null ? "" : value;
+        try {
+            return environment.resolvePlaceholders(value);
+        } catch (Exception e) {
+            return value;
+        }
     }
 
     // ── Test harness API ──────────────────────────────────────────────────────
 
     /**
      * Returns an unmodifiable view of all registered stream listener registrations,
-     * keyed by listener ID. Used by {@link com.cheetah.racer.test.RacerTestHarness}.
+     * keyed by listener ID. Used by
+     * {@link com.cheetah.racer.test.RacerTestHarness}.
      */
     public Map<String, StreamListenerRegistration> getStreamListenerRegistrations() {
         return Map.copyOf(streamListenerRegistrations);
@@ -543,38 +596,48 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
      * Directly feeds {@code message} into the business-logic pipeline of the stream
      * listener identified by {@code listenerId}, bypassing Redis Streams entirely.
      *
-     * <p>The message goes through: circuit-breaker gate → deduplication → schema
-     * validation → argument resolution → interceptors → handler invocation → DLQ on error.
-     * The Redis XACK step is intentionally skipped — there is no real stream record.
+     * <p>
+     * The message goes through: circuit-breaker gate → deduplication → schema
+     * validation → argument resolution → interceptors → handler invocation → DLQ on
+     * error.
+     * The Redis XACK step is intentionally skipped — there is no real stream
+     * record.
      *
-     * @param listenerId the listener ID as configured via {@code @RacerStreamListener(id="...")}
-     *                   or the auto-generated {@code "<beanName>.<methodName>"} fallback
+     * @param listenerId the listener ID as configured via
+     *                   {@code @RacerStreamListener(id="...")}
+     *                   or the auto-generated {@code "<beanName>.<methodName>"}
+     *                   fallback
      * @param message    the synthetic message to process
      * @return a {@link Mono} that completes when the pipeline finishes
-     * @throws IllegalArgumentException if no stream listener is registered with the given ID
+     * @throws IllegalArgumentException if no stream listener is registered with the
+     *                                  given ID
      */
     public Mono<Void> processMessage(String listenerId, RacerMessage message) {
         StreamListenerRegistration reg = streamListenerRegistrations.get(listenerId);
         if (reg == null) {
             return Mono.error(new IllegalArgumentException(
                     "[RACER-STREAM-LISTENER] No stream listener registered with id '" + listenerId
-                    + "'. Registered ids: " + streamListenerRegistrations.keySet()));
+                            + "'. Registered ids: " + streamListenerRegistrations.keySet()));
         }
         return processMessageDirectly(reg.bean(), reg.method(), reg.streamKey(),
                 listenerId, message, reg.dedupEnabled());
     }
 
     /**
-     * Directly feeds {@code message} into the stream identified by {@code streamKey} and
+     * Directly feeds {@code message} into the stream identified by
+     * {@code streamKey} and
      * {@code group}, bypassing Redis Streams.
      *
-     * <p>Looks up the first listener registered for the given stream key and group combination.
+     * <p>
+     * Looks up the first listener registered for the given stream key and group
+     * combination.
      *
      * @param streamKey the stream key (e.g. {@code orders:stream})
      * @param group     the consumer group name
      * @param message   the synthetic message to process
      * @return a {@link Mono} that completes when the pipeline finishes
-     * @throws IllegalArgumentException if no stream listener is registered for the given stream/group
+     * @throws IllegalArgumentException if no stream listener is registered for the
+     *                                  given stream/group
      */
     public Mono<Void> processMessage(String streamKey, String group, RacerMessage message) {
         // Find the first registration matching the given streamKey and group
@@ -585,34 +648,38 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
                         reg.streamKey() + "." + reg.group(), message, reg.dedupEnabled()))
                 .orElseGet(() -> Mono.error(new IllegalArgumentException(
                         "[RACER-STREAM-LISTENER] No stream listener registered for stream='"
-                        + streamKey + "' group='" + group + "'")));
+                                + streamKey + "' group='" + group + "'")));
     }
 
     /**
      * Executes the business-logic processing pipeline for a stream message without
-     * performing a Redis XACK (since there is no real stream record in the test context).
+     * performing a Redis XACK (since there is no real stream record in the test
+     * context).
      *
-     * <p>Mirrors the logic of {@link #processChecked} but omits all ACK calls so it
+     * <p>
+     * Mirrors the logic of {@link #processChecked} but omits all ACK calls so it
      * can be invoked from the test harness without a live Redis connection.
      */
     private Mono<Void> processMessageDirectly(Object bean, Method method, String streamKey,
-                                               String listenerId, RacerMessage message,
-                                               boolean dedupEnabled) {
+            String listenerId, RacerMessage message,
+            boolean dedupEnabled) {
         incrementInFlight();
         return processNoAck(bean, method, streamKey, listenerId, message, dedupEnabled)
                 .doFinally(s -> decrementInFlight());
     }
 
     /**
-     * Performs the full processing pipeline steps (CB gate, dedup, schema, interceptors,
+     * Performs the full processing pipeline steps (CB gate, dedup, schema,
+     * interceptors,
      * handler invocation, DLQ) without any Redis XACK operations.
      */
     private Mono<Void> processNoAck(Object bean, Method method, String streamKey,
-                                     String listenerId, RacerMessage message,
-                                     boolean dedupEnabled) {
+            String listenerId, RacerMessage message,
+            boolean dedupEnabled) {
         // Circuit breaker gate
         RacerCircuitBreaker cb = getCircuitBreakerRegistry() != null
-                ? getCircuitBreakerRegistry().getOrCreate(listenerId) : null;
+                ? getCircuitBreakerRegistry().getOrCreate(listenerId)
+                : null;
         if (cb != null && !cb.isCallPermitted()) {
             log.debug("[RACER-STREAM-LISTENER] '{}' circuit {} — skipping test message",
                     listenerId, cb.getState());
@@ -639,15 +706,17 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
      * invocation without any Redis XACK calls.
      */
     private Mono<Void> invokeNoAck(Object bean, Method method, String streamKey,
-                                    String listenerId, RacerMessage message,
-                                    @Nullable RacerCircuitBreaker cb) {
+            String listenerId, RacerMessage message,
+            @Nullable RacerCircuitBreaker cb) {
         // Schema validation
         if (racerSchemaRegistry != null) {
             try {
                 racerSchemaRegistry.validateForConsume(streamKey, message.getPayload());
             } catch (Exception e) {
-                log.warn("[RACER-STREAM-LISTENER] '{}' schema validation failed in test: {}", listenerId, e.getMessage());
-                if (cb != null) cb.onFailure();
+                log.warn("[RACER-STREAM-LISTENER] '{}' schema validation failed in test: {}", listenerId,
+                        e.getMessage());
+                if (cb != null)
+                    cb.onFailure();
                 // .then() converts Mono<?> from enqueueDeadLetter to Mono<Void>
                 return enqueueDeadLetter(message, e)
                         .doOnTerminate(() -> incrementFailed(listenerId))
@@ -661,7 +730,8 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
             arg = resolveArgument(method, message);
         } catch (Exception e) {
             log.warn("[RACER-STREAM-LISTENER] '{}' argument resolution failed in test: {}", listenerId, e.getMessage());
-            if (cb != null) cb.onFailure();
+            if (cb != null)
+                cb.onFailure();
             // .then() converts Mono<?> from enqueueDeadLetter to Mono<Void>
             return enqueueDeadLetter(message, e)
                     .doOnTerminate(() -> incrementFailed(listenerId))
@@ -679,7 +749,8 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
                         try {
                             finalArg = resolveArgument(method, intercepted);
                         } catch (Exception e) {
-                            if (cb != null) cb.onFailure();
+                            if (cb != null)
+                                cb.onFailure();
                             // .then() converts Mono<?> to Mono<Void> inside flatMap
                             return enqueueDeadLetter(intercepted, e)
                                     .doOnTerminate(() -> incrementFailed(listenerId))
@@ -693,21 +764,24 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
                             .fromCallable(() -> isNoArg ? method.invoke(bean) : method.invoke(bean, finalArg))
                             .subscribeOn(Schedulers.boundedElastic())
                             .flatMap(result -> {
-                                if (result instanceof Mono<?> mono) return mono.then();
+                                if (result instanceof Mono<?> mono)
+                                    return mono.then();
                                 return Mono.<Void>empty();
                             });
 
                     return invocation
                             .doOnSuccess(v -> {
                                 incrementProcessed(listenerId);
-                                if (cb != null) cb.onSuccess();
+                                if (cb != null)
+                                    cb.onSuccess();
                                 racerMetrics.recordConsumed(streamKey, listenerId);
                             })
                             .onErrorResume(ex -> {
                                 incrementFailed(listenerId);
                                 Throwable root = ex.getCause();
                                 Throwable cause = root != null ? root : ex;
-                                if (cb != null) cb.onFailure();
+                                if (cb != null)
+                                    cb.onFailure();
                                 return enqueueDeadLetter(intercepted, cause).then();
                             });
                 });

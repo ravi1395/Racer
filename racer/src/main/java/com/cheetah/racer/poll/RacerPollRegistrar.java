@@ -1,26 +1,5 @@
 package com.cheetah.racer.poll;
 
-import com.cheetah.racer.annotation.RacerPoll;
-import com.cheetah.racer.metrics.NoOpRacerMetrics;
-import com.cheetah.racer.metrics.RacerMetrics;
-import com.cheetah.racer.metrics.RacerMetricsPort;
-import com.cheetah.racer.publisher.RacerChannelPublisher;
-import com.cheetah.racer.publisher.RacerPublisherRegistry;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.annotation.PreDestroy;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.aop.framework.AopProxyUtils;
-import org.springframework.beans.BeansException;
-import org.springframework.beans.factory.config.BeanPostProcessor;
-import org.springframework.context.EnvironmentAware;
-import org.springframework.core.env.Environment;
-import org.springframework.lang.NonNull;
-import org.springframework.lang.Nullable;
-import reactor.core.Disposable;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
-
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -30,18 +9,44 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.springframework.aop.framework.AopProxyUtils;
+import org.springframework.beans.BeansException;
+import org.springframework.beans.factory.config.BeanPostProcessor;
+import org.springframework.context.EnvironmentAware;
+import org.springframework.core.env.Environment;
+import org.springframework.lang.NonNull;
+import org.springframework.lang.Nullable;
+
+import com.cheetah.racer.annotation.RacerPoll;
+import com.cheetah.racer.metrics.NoOpRacerMetrics;
+import com.cheetah.racer.metrics.RacerMetricsPort;
+import com.cheetah.racer.publisher.RacerChannelPublisher;
+import com.cheetah.racer.publisher.RacerPublisherRegistry;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import jakarta.annotation.PreDestroy;
+import lombok.extern.slf4j.Slf4j;
+import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+
 /**
- * {@link BeanPostProcessor} that discovers methods annotated with {@link RacerPoll}
+ * {@link BeanPostProcessor} that discovers methods annotated with
+ * {@link RacerPoll}
  * and registers a reactive polling loop for each one.
  *
- * <p>On each tick the annotated method is called with no arguments. The method is
- * responsible for fetching or computing the data to publish. The return value is
+ * <p>
+ * On each tick the annotated method is called with no arguments. The method is
+ * responsible for fetching or computing the data to publish. The return value
+ * is
  * then published to the configured Racer channel:
  * <ul>
- *   <li>{@code String} - published as-is.</li>
- *   <li>Any object - serialized to JSON before publishing.</li>
- *   <li>{@code Mono} - subscribed to; the emitted value is published.</li>
- *   <li>{@code void} or {@code null} - skipped (nothing published for that tick).</li>
+ * <li>{@code String} - published as-is.</li>
+ * <li>Any object - serialized to JSON before publishing.</li>
+ * <li>{@code Mono} - subscribed to; the emitted value is published.</li>
+ * <li>{@code void} or {@code null} - skipped (nothing published for that
+ * tick).</li>
  * </ul>
  */
 @Slf4j
@@ -54,15 +59,15 @@ public class RacerPollRegistrar implements BeanPostProcessor, EnvironmentAware {
     private Environment environment;
 
     private final List<Disposable> subscriptions = new CopyOnWriteArrayList<>();
-    private final AtomicLong totalPolls  = new AtomicLong(0);
+    private final AtomicLong totalPolls = new AtomicLong(0);
     private final AtomicLong totalErrors = new AtomicLong(0);
 
     public RacerPollRegistrar(RacerPublisherRegistry publisherRegistry,
-                              ObjectMapper objectMapper,
-                              @Nullable RacerMetrics racerMetrics) {
+            ObjectMapper objectMapper,
+            @Nullable RacerMetricsPort racerMetrics) {
         this.publisherRegistry = publisherRegistry;
-        this.objectMapper      = objectMapper;
-        this.racerMetrics      = racerMetrics != null ? racerMetrics : new NoOpRacerMetrics();
+        this.objectMapper = objectMapper;
+        this.racerMetrics = racerMetrics != null ? racerMetrics : NoOpRacerMetrics.INSTANCE;
     }
 
     @Override
@@ -84,18 +89,21 @@ public class RacerPollRegistrar implements BeanPostProcessor, EnvironmentAware {
 
     @PreDestroy
     public void stop() {
-        subscriptions.forEach(d -> { if (!d.isDisposed()) d.dispose(); });
+        subscriptions.forEach(d -> {
+            if (!d.isDisposed())
+                d.dispose();
+        });
         log.info("[RACER-POLL] Stopped. totalPolls={} totalErrors={}",
                 totalPolls.get(), totalErrors.get());
     }
 
     private void registerPoll(Object bean, Method method, RacerPoll ann, String beanName) {
-        String channel    = resolve(ann.channel());
+        String channel = resolve(ann.channel());
         String channelRef = resolve(ann.channelRef());
-        String sender     = resolve(ann.sender());
-        String cronExpr   = resolve(ann.cron());
-        boolean async     = ann.async();
-        long fixedRate    = ann.fixedRate();
+        String sender = resolve(ann.sender());
+        String cronExpr = resolve(ann.cron());
+        boolean async = ann.async();
+        long fixedRate = ann.fixedRate();
         long initialDelay = ann.initialDelay();
 
         method.setAccessible(true);
@@ -143,9 +151,9 @@ public class RacerPollRegistrar implements BeanPostProcessor, EnvironmentAware {
 
     @SuppressWarnings("unchecked")
     private Mono<Void> invokeThenPublish(Object bean, Method method,
-                                          RacerChannelPublisher publisher,
-                                          String channelName, String sender,
-                                          boolean async) {
+            RacerChannelPublisher publisher,
+            String channelName, String sender,
+            boolean async) {
         return Mono.fromCallable(() -> {
             if (method.getParameterCount() != 0) {
                 log.warn("[RACER-POLL] {} must have no parameters - skipping.", method.getName());
@@ -153,24 +161,25 @@ public class RacerPollRegistrar implements BeanPostProcessor, EnvironmentAware {
             }
             return method.invoke(bean);
         })
-        .subscribeOn(Schedulers.boundedElastic())
-        .flatMap(result -> {
-            if (result == null) return Mono.empty();
-            if (result instanceof Mono<?> mono) {
-                return ((Mono<Object>) mono)
-                        .flatMap(v -> publish(v, publisher, channelName, sender, async));
-            }
-            return publish(result, publisher, channelName, sender, async);
-        })
-        .onErrorResume(ex -> {
-            totalErrors.incrementAndGet();
-            log.warn("[RACER-POLL] Poll error in {}: {}", method.getName(), ex.getMessage());
-            return Mono.empty();
-        });
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMap(result -> {
+                    if (result == null)
+                        return Mono.empty();
+                    if (result instanceof Mono<?> mono) {
+                        return ((Mono<Object>) mono)
+                                .flatMap(v -> publish(v, publisher, channelName, sender, async));
+                    }
+                    return publish(result, publisher, channelName, sender, async);
+                })
+                .onErrorResume(ex -> {
+                    totalErrors.incrementAndGet();
+                    log.warn("[RACER-POLL] Poll error in {}: {}", method.getName(), ex.getMessage());
+                    return Mono.empty();
+                });
     }
 
     private Mono<Void> publish(Object payload, RacerChannelPublisher publisher,
-                                String channelName, String sender, boolean async) {
+            String channelName, String sender, boolean async) {
         totalPolls.incrementAndGet();
         racerMetrics.recordPublished(channelName, async ? "async" : "sync");
         String payloadStr;
@@ -192,16 +201,26 @@ public class RacerPollRegistrar implements BeanPostProcessor, EnvironmentAware {
     }
 
     private String resolve(String value) {
-        if (value == null || value.isEmpty()) return value;
-        try { return environment.resolvePlaceholders(value); }
-        catch (Exception e) { return value; }
+        if (value == null || value.isEmpty())
+            return value;
+        try {
+            return environment.resolvePlaceholders(value);
+        } catch (Exception e) {
+            return value;
+        }
     }
 
-    public long getTotalPolls()  { return totalPolls.get(); }
-    public long getTotalErrors() { return totalErrors.get(); }
+    public long getTotalPolls() {
+        return totalPolls.get();
+    }
+
+    public long getTotalErrors() {
+        return totalErrors.get();
+    }
 
     static class CronMatcher {
-        private CronMatcher() {}
+        private CronMatcher() {
+        }
 
         /**
          * Returns {@code true} if the given cron expression matches the current second
@@ -215,9 +234,9 @@ public class RacerPollRegistrar implements BeanPostProcessor, EnvironmentAware {
         @SuppressWarnings("null")
         static boolean matchesOnce(String cron, AtomicReference<LocalDateTime> lastFired) {
             try {
-                org.springframework.scheduling.support.CronExpression expr =
-                        org.springframework.scheduling.support.CronExpression.parse(cron);
-                LocalDateTime now  = LocalDateTime.now().truncatedTo(ChronoUnit.SECONDS);
+                org.springframework.scheduling.support.CronExpression expr = org.springframework.scheduling.support.CronExpression
+                        .parse(cron);
+                LocalDateTime now = LocalDateTime.now().truncatedTo(ChronoUnit.SECONDS);
                 LocalDateTime next = expr.next(now.minusSeconds(1));
                 if (next == null || next.isAfter(now)) {
                     return false;
@@ -235,14 +254,17 @@ public class RacerPollRegistrar implements BeanPostProcessor, EnvironmentAware {
             }
         }
 
-        /** @deprecated use {@link #matchesOnce(String, AtomicReference)} to avoid duplicate fires */
+        /**
+         * @deprecated use {@link #matchesOnce(String, AtomicReference)} to avoid
+         *             duplicate fires
+         */
         @Deprecated
         @SuppressWarnings("null")
         static boolean matches(String cron) {
             try {
-                org.springframework.scheduling.support.CronExpression expr =
-                        org.springframework.scheduling.support.CronExpression.parse(cron);
-                java.time.LocalDateTime now  = java.time.LocalDateTime.now();
+                org.springframework.scheduling.support.CronExpression expr = org.springframework.scheduling.support.CronExpression
+                        .parse(cron);
+                java.time.LocalDateTime now = java.time.LocalDateTime.now();
                 java.time.LocalDateTime next = expr.next(now.minusSeconds(1));
                 return next != null && !next.isAfter(now);
             } catch (Exception e) {

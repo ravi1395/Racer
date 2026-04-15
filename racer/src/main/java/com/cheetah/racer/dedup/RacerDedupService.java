@@ -1,25 +1,31 @@
 package com.cheetah.racer.dedup;
 
-import com.cheetah.racer.config.RacerProperties;
-import com.cheetah.racer.metrics.NoOpRacerMetrics;
-import com.cheetah.racer.metrics.RacerMetrics;
-import com.cheetah.racer.metrics.RacerMetricsPort;
-import lombok.extern.slf4j.Slf4j;
+import java.time.Duration;
+
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.lang.Nullable;
-import reactor.core.publisher.Mono;
 
-import java.time.Duration;
+import com.cheetah.racer.config.RacerProperties;
+import com.cheetah.racer.metrics.NoOpRacerMetrics;
+import com.cheetah.racer.metrics.RacerMetricsPort;
+
+import lombok.extern.slf4j.Slf4j;
+import reactor.core.publisher.Mono;
 
 /**
  * Idempotency-key deduplication service backed by Redis.
  *
- * <p>Uses {@code SET NX EX} (SETNX + TTL in one atomic operation) to track recently
- * processed message IDs. The first time a given ID is seen the key is created and the
- * message is allowed through; subsequent arrivals within the TTL window are detected as
+ * <p>
+ * Uses {@code SET NX EX} (SETNX + TTL in one atomic operation) to track
+ * recently
+ * processed message IDs. The first time a given ID is seen the key is created
+ * and the
+ * message is allowed through; subsequent arrivals within the TTL window are
+ * detected as
  * duplicates and silently dropped.
  *
- * <p>Activated when {@code racer.dedup.enabled=true}.  Opt-in per listener via
+ * <p>
+ * Activated when {@code racer.dedup.enabled=true}. Opt-in per listener via
  * {@code @RacerListener(dedup = true)}.
  *
  * <pre>
@@ -48,15 +54,16 @@ public class RacerDedupService {
     public RacerDedupService(
             ReactiveRedisTemplate<String, String> redisTemplate,
             RacerProperties racerProperties,
-            @Nullable RacerMetrics racerMetrics) {
-        this.redisTemplate   = redisTemplate;
+            @Nullable RacerMetricsPort racerMetrics) {
+        this.redisTemplate = redisTemplate;
         this.racerProperties = racerProperties;
-        this.racerMetrics    = racerMetrics != null ? racerMetrics : new NoOpRacerMetrics();
+        this.racerMetrics = racerMetrics != null ? racerMetrics : NoOpRacerMetrics.INSTANCE;
     }
 
     /**
      * Atomically checks and marks a message ID as processed.
-     * Equivalent to {@link #checkAndMarkProcessed(String, String)} with {@code listenerId = null}.
+     * Equivalent to {@link #checkAndMarkProcessed(String, String)} with
+     * {@code listenerId = null}.
      */
     public Mono<Boolean> checkAndMarkProcessed(String messageId) {
         return checkAndMarkProcessed(messageId, null);
@@ -65,15 +72,21 @@ public class RacerDedupService {
     /**
      * Atomically checks and marks a message ID as processed.
      *
-     * <p>Returns {@code Mono.just(true)} if the message ID was not yet seen (caller should
-     * process it). Returns {@code Mono.just(false)} if the ID was already recorded in the
+     * <p>
+     * Returns {@code Mono.just(true)} if the message ID was not yet seen (caller
+     * should
+     * process it). Returns {@code Mono.just(false)} if the ID was already recorded
+     * in the
      * dedup window (caller should skip it as a duplicate).
      *
-     * <p>On Redis errors the method fails-open: the message is allowed through so that
+     * <p>
+     * On Redis errors the method fails-open: the message is allowed through so that
      * a temporary Redis connectivity issue does not halt message processing.
      *
-     * @param messageId  the {@link com.cheetah.racer.model.RacerMessage#getId()} value
-     * @param listenerId optional listener ID used for the {@code racer.dedup.duplicates} counter tag
+     * @param messageId  the {@link com.cheetah.racer.model.RacerMessage#getId()}
+     *                   value
+     * @param listenerId optional listener ID used for the
+     *                   {@code racer.dedup.duplicates} counter tag
      * @return {@code Mono<true>} = process, {@code Mono<false>} = skip (duplicate)
      */
     public Mono<Boolean> checkAndMarkProcessed(String messageId, @Nullable String listenerId) {
