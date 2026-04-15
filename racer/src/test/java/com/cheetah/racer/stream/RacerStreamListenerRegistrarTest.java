@@ -1,37 +1,5 @@
 package com.cheetah.racer.stream;
 
-import com.cheetah.racer.annotation.RacerStreamListener;
-import com.cheetah.racer.circuitbreaker.RacerCircuitBreaker;
-import com.cheetah.racer.circuitbreaker.RacerCircuitBreakerRegistry;
-import com.cheetah.racer.config.RacerProperties;
-import com.cheetah.racer.dedup.RacerDedupService;
-import com.cheetah.racer.exception.RacerCircuitOpenException;
-import com.cheetah.racer.listener.RacerDeadLetterHandler;
-import com.cheetah.racer.listener.RacerMessageInterceptor;
-import com.cheetah.racer.metrics.RacerMetricsPort;
-import com.cheetah.racer.model.RacerMessage;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.mockito.junit.jupiter.MockitoSettings;
-import org.mockito.quality.Strictness;
-import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.data.redis.connection.stream.Consumer;
-import org.springframework.data.redis.connection.stream.MapRecord;
-import org.springframework.data.redis.connection.stream.RecordId;
-import org.springframework.data.redis.connection.stream.StreamOffset;
-import org.springframework.data.redis.connection.stream.StreamReadOptions;
-import org.springframework.data.redis.connection.stream.StreamRecords;
-import org.springframework.core.env.Environment;
-import org.springframework.data.redis.core.ReactiveRedisTemplate;
-import org.springframework.data.redis.core.ReactiveStreamOperations;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
-
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -39,9 +7,49 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
+import org.mockito.Mock;
+import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.core.env.Environment;
+import org.springframework.data.redis.connection.stream.Consumer;
+import org.springframework.data.redis.connection.stream.MapRecord;
+import org.springframework.data.redis.connection.stream.RecordId;
+import org.springframework.data.redis.connection.stream.StreamOffset;
+import org.springframework.data.redis.connection.stream.StreamReadOptions;
+import org.springframework.data.redis.connection.stream.StreamRecords;
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
+import org.springframework.data.redis.core.ReactiveStreamOperations;
+
+import com.cheetah.racer.annotation.RacerStreamListener;
+import com.cheetah.racer.circuitbreaker.RacerCircuitBreaker;
+import com.cheetah.racer.circuitbreaker.RacerCircuitBreakerRegistry;
+import com.cheetah.racer.config.RacerProperties;
+import com.cheetah.racer.dedup.RacerDedupService;
+import com.cheetah.racer.exception.RacerCircuitOpenException;
+import com.cheetah.racer.exception.RacerConfigurationException;
+import com.cheetah.racer.listener.RacerDeadLetterHandler;
+import com.cheetah.racer.listener.RacerMessageInterceptor;
+import com.cheetah.racer.metrics.RacerMetricsPort;
+import com.cheetah.racer.model.RacerMessage;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 /**
  * Unit tests for {@link RacerStreamListenerRegistrar}.
@@ -54,43 +62,62 @@ class RacerStreamListenerRegistrarTest {
 
     static class SampleStreamBean {
         @RacerStreamListener(streamKey = "stream:orders", group = "test-group")
-        public void handleOrder(RacerMessage msg) {}
+        public void handleOrder(RacerMessage msg) {
+        }
     }
 
     static class NoArgBean {
         final AtomicInteger calls = new AtomicInteger();
+
         @RacerStreamListener(streamKey = "stream:noarg", group = "noarg-group")
-        public void handle() { calls.incrementAndGet(); }
+        public void handle() {
+            calls.incrementAndGet();
+        }
     }
 
     static class DedupStreamBean {
         final AtomicInteger calls = new AtomicInteger();
+
         @RacerStreamListener(streamKey = "stream:dedup", group = "dedup-group", dedup = true)
-        public void handle(RacerMessage msg) { calls.incrementAndGet(); }
+        public void handle(RacerMessage msg) {
+            calls.incrementAndGet();
+        }
     }
 
     static class PlainBean {
-        public void noAnnotation() {}
+        public void noAnnotation() {
+        }
     }
 
     static class NoStreamKeyBean {
         @RacerStreamListener(streamKey = "", group = "test-group")
-        public void handle(RacerMessage msg) {}
+        public void handle(RacerMessage msg) {
+        }
     }
 
     // ── Mocks and collaborators ───────────────────────────────────────────────
 
-    @Mock ReactiveRedisTemplate<String, String> redisTemplate;
+    @Mock
+    ReactiveRedisTemplate<String, String> redisTemplate;
     @SuppressWarnings("rawtypes")
-    @Mock ReactiveStreamOperations streamOps;
-    @Mock Environment environment;
-    @Mock RacerDeadLetterHandler deadLetterHandler;
-    @Mock RacerDedupService dedupService;
-    @Mock RacerCircuitBreakerRegistry cbRegistry;
-    @Mock RacerCircuitBreaker circuitBreaker;
-    @Mock ObjectProvider<RacerDedupService> dedupServiceProvider;
-    @Mock ObjectProvider<RacerCircuitBreakerRegistry> cbRegistryProvider;
-    @Mock RacerMetricsPort racerMetrics;
+    @Mock
+    ReactiveStreamOperations streamOps;
+    @Mock
+    Environment environment;
+    @Mock
+    RacerDeadLetterHandler deadLetterHandler;
+    @Mock
+    RacerDedupService dedupService;
+    @Mock
+    RacerCircuitBreakerRegistry cbRegistry;
+    @Mock
+    RacerCircuitBreaker circuitBreaker;
+    @Mock
+    ObjectProvider<RacerDedupService> dedupServiceProvider;
+    @Mock
+    ObjectProvider<RacerCircuitBreakerRegistry> cbRegistryProvider;
+    @Mock
+    RacerMetricsPort racerMetrics;
 
     ObjectMapper objectMapper;
     RacerProperties properties;
@@ -176,10 +203,10 @@ class RacerStreamListenerRegistrarTest {
 
     @Test
     void logPrefix_returnsExpected() throws Exception {
-        // logPrefix() is protected — we can test it via the class since we are in the same package
+        // logPrefix() is protected — we can test it via the class since we are in the
+        // same package
         // Use reflection to access the protected method
-        java.lang.reflect.Method logPrefixMethod =
-                RacerStreamListenerRegistrar.class.getDeclaredMethod("logPrefix");
+        java.lang.reflect.Method logPrefixMethod = RacerStreamListenerRegistrar.class.getDeclaredMethod("logPrefix");
         logPrefixMethod.setAccessible(true);
         String prefix = (String) logPrefixMethod.invoke(registrar);
 
@@ -287,7 +314,8 @@ class RacerStreamListenerRegistrarTest {
                 .withId(RecordId.of("1-0"))
                 .ofMap(Map.of("data", json));
 
-        when(streamOps.read(any(Consumer.class), any(StreamReadOptions.class), any(StreamOffset.class))).thenReturn(Flux.just(record), Flux.never());
+        when(streamOps.read(any(Consumer.class), any(StreamReadOptions.class), any(StreamOffset.class)))
+                .thenReturn(Flux.just(record), Flux.never());
         when(streamOps.acknowledge(anyString(), anyString(), any(RecordId.class))).thenReturn(Mono.just(1L));
 
         registrar.postProcessAfterInitialization(bean, "noArgBean");
@@ -308,7 +336,8 @@ class RacerStreamListenerRegistrarTest {
                 .withId(RecordId.of("2-0"))
                 .ofMap(Map.of("other", "value")); // no "data" field
 
-        when(streamOps.read(any(Consumer.class), any(StreamReadOptions.class), any(StreamOffset.class))).thenReturn(Flux.just(record), Flux.never());
+        when(streamOps.read(any(Consumer.class), any(StreamReadOptions.class), any(StreamOffset.class)))
+                .thenReturn(Flux.just(record), Flux.never());
         when(streamOps.acknowledge(anyString(), anyString(), any(RecordId.class))).thenReturn(Mono.just(1L));
 
         registrar.postProcessAfterInitialization(bean, "sampleStreamBean");
@@ -329,7 +358,8 @@ class RacerStreamListenerRegistrarTest {
                 .withId(RecordId.of("3-0"))
                 .ofMap(Map.of("data", "NOT-VALID-JSON"));
 
-        when(streamOps.read(any(Consumer.class), any(StreamReadOptions.class), any(StreamOffset.class))).thenReturn(Flux.just(record), Flux.never());
+        when(streamOps.read(any(Consumer.class), any(StreamReadOptions.class), any(StreamOffset.class)))
+                .thenReturn(Flux.just(record), Flux.never());
         when(streamOps.acknowledge(anyString(), anyString(), any(RecordId.class))).thenReturn(Mono.just(1L));
 
         registrar.postProcessAfterInitialization(bean, "sampleStreamBean");
@@ -357,7 +387,8 @@ class RacerStreamListenerRegistrarTest {
                 .withId(RecordId.of("4-0"))
                 .ofMap(Map.of("data", json));
 
-        when(streamOps.read(any(Consumer.class), any(StreamReadOptions.class), any(StreamOffset.class))).thenReturn(Flux.just(record), Flux.never());
+        when(streamOps.read(any(Consumer.class), any(StreamReadOptions.class), any(StreamOffset.class)))
+                .thenReturn(Flux.just(record), Flux.never());
         when(streamOps.acknowledge(anyString(), anyString(), any(RecordId.class))).thenReturn(Mono.just(1L));
 
         registrar.postProcessAfterInitialization(bean, "sampleStreamBean");
@@ -374,7 +405,13 @@ class RacerStreamListenerRegistrarTest {
         when(dedupService.checkAndMarkProcessed(anyString(), anyString()))
                 .thenReturn(Mono.just(false)); // already processed
 
-        registrar.setDedupService(dedupService);
+        // Enable dedup globally so NFD-1 validation passes for DedupStreamBean
+        properties.getDedup().setEnabled(true);
+
+        RacerStreamListenerRegistrar dedupRegistrar = new RacerStreamListenerRegistrar(
+                redisTemplate, objectMapper, properties, null, null, null);
+        dedupRegistrar.setEnvironment(environment);
+        dedupRegistrar.setDedupService(dedupService);
 
         DedupStreamBean bean = new DedupStreamBean();
         RacerMessage msg = RacerMessage.create("stream:dedup", "payload", "test");
@@ -385,10 +422,11 @@ class RacerStreamListenerRegistrarTest {
                 .withId(RecordId.of("5-0"))
                 .ofMap(Map.of("data", json));
 
-        when(streamOps.read(any(Consumer.class), any(StreamReadOptions.class), any(StreamOffset.class))).thenReturn(Flux.just(record), Flux.never());
+        when(streamOps.read(any(Consumer.class), any(StreamReadOptions.class), any(StreamOffset.class)))
+                .thenReturn(Flux.just(record), Flux.never());
         when(streamOps.acknowledge(anyString(), anyString(), any(RecordId.class))).thenReturn(Mono.just(1L));
 
-        registrar.postProcessAfterInitialization(bean, "dedupBean");
+        dedupRegistrar.postProcessAfterInitialization(bean, "dedupBean");
         Thread.sleep(400);
 
         verify(streamOps, atLeastOnce()).acknowledge(eq("stream:dedup"), anyString(), any(RecordId.class));
@@ -424,7 +462,8 @@ class RacerStreamListenerRegistrarTest {
                 .withId(RecordId.of("6-0"))
                 .ofMap(Map.of("data", json));
 
-        when(streamOps.read(any(Consumer.class), any(StreamReadOptions.class), any(StreamOffset.class))).thenReturn(Flux.just(record), Flux.never());
+        when(streamOps.read(any(Consumer.class), any(StreamReadOptions.class), any(StreamOffset.class)))
+                .thenReturn(Flux.just(record), Flux.never());
         when(streamOps.acknowledge(anyString(), anyString(), any(RecordId.class))).thenReturn(Mono.just(1L));
 
         dlqRegistrar.postProcessAfterInitialization(bean, "failBean");
@@ -530,5 +569,48 @@ class RacerStreamListenerRegistrarTest {
         verify(deadLetterHandler, atLeastOnce()).enqueue(
                 any(RacerMessage.class),
                 argThat(t -> t instanceof RacerCircuitOpenException));
+    }
+
+    // ── Tests: NFD-1 — dedup=true with global dedup disabled ────────────────
+
+    @Test
+    void register_dedupTrueButGlobalDedupDisabled_throwsConfigException() {
+        properties.getDedup().setEnabled(false);
+
+        DedupStreamBean bean = new DedupStreamBean();
+
+        assertThatThrownBy(() -> registrar.postProcessAfterInitialization(bean, "dedupBean"))
+                .isInstanceOf(RacerConfigurationException.class)
+                .hasMessageContaining("dedup=true")
+                .hasMessageContaining("racer.dedup.enabled");
+    }
+
+    // ── Tests: CUX-2 — batchSize ceiling enforcement ────────────────────────
+
+    @Test
+    void register_batchSizeExceedsMax_throwsConfigException() {
+        // Default maxBatchSize is 25
+        Object oversizedBean = new Object() {
+            @RacerStreamListener(streamKey = "stream:big", group = "big-group", batchSize = 50)
+            public void handle(RacerMessage msg) {
+            }
+        };
+
+        assertThatThrownBy(() -> registrar.postProcessAfterInitialization(oversizedBean, "bigBatchBean"))
+                .isInstanceOf(RacerConfigurationException.class)
+                .hasMessageContaining("batchSize")
+                .hasMessageContaining("50");
+    }
+
+    @Test
+    void register_batchSizeWithinMax_doesNotThrow() {
+        Object normalBean = new Object() {
+            @RacerStreamListener(streamKey = "stream:normal", group = "normal-group", batchSize = 10)
+            public void handle(RacerMessage msg) {
+            }
+        };
+
+        // Should not throw — batchSize 10 <= maxBatchSize 25
+        registrar.postProcessAfterInitialization(normalBean, "normalBatchBean");
     }
 }

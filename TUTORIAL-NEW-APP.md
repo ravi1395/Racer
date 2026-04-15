@@ -413,6 +413,40 @@ public class NotificationResult {
 }
 ```
 
+### 3.3 — Per-Channel Rate Limiting (optional exercise)
+
+Racer supports Redis token-bucket rate limiting at the channel level. Enable it
+on the `notifications` channel to cap burst traffic:
+
+**`application.properties`**
+
+```properties
+racer.rate-limit.enabled=true
+racer.rate-limit.default-capacity=100
+racer.rate-limit.default-refill-rate=100
+
+# Override for the notifications channel — allow only 50 msgs/second
+racer.rate-limit.channels.notifications.capacity=50
+racer.rate-limit.channels.notifications.refill-rate=50
+```
+
+**Test with a burst** — send more than 50 requests rapidly:
+
+```bash
+for i in $(seq 1 100); do
+  curl -s -X POST http://localhost:8080/notify \
+    -H 'Content-Type: application/json' \
+    -d "{\"type\":\"SMS\",\"recipient\":\"user-$i\"}" &
+done
+wait
+```
+
+Once the bucket is empty, Racer rejects additional publishes with a
+`RacerRateLimitExceededException` until tokens refill. This prevents a single
+channel from overwhelming Redis.
+
+> **See also:** [Per-Channel Rate Limiting](README.md#per-channel-rate-limiting) in the README for the full property reference.
+
 ---
 
 ## Part 4 — Three Publishing Patterns

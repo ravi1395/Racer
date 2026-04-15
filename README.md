@@ -222,7 +222,7 @@ java -jar racer-benchmark/target/benchmarks.jar
 | `spring.data.redis.host` | `localhost` | Redis host |
 | `spring.data.redis.port` | `6379` | Redis port |
 | `racer.default-channel` | `racer:messages` | Fallback channel used when no alias is given |
-| `racer.strict-channel-validation` | `false` | Throw at startup for unknown channel aliases instead of silently falling back to the default channel |
+| `racer.strict-channel-validation` | `true` | Throw at startup for unknown channel aliases instead of silently falling back to the default channel (default changed from `false` to `true` in v1.6) |
 | `racer.id-strategy` | `uuid` | Envelope ID generation strategy |
 | `racer.channels.<alias>.name` | — | Redis channel name for this alias |
 | `racer.channels.<alias>.async` | `true` | Default async flag for this channel |
@@ -230,6 +230,9 @@ java -jar racer-benchmark/target/benchmarks.jar
 | `racer.channels.<alias>.durable` | `false` | Publish the alias to a Redis Stream and let `@RacerListener(channelRef="<alias>")` consume it durably |
 | `racer.channels.<alias>.durable-group` | `<alias>-group` | Consumer-group name used for durable channel aliases |
 | `racer.channels.<alias>.stream-key` | `<channelName>:stream` | Explicit Redis Stream key for a durable channel alias |
+
+> **Tip:** Per-channel rate limiting is configured separately via `racer.rate-limit.channels.<alias>.*`. See [Per-Channel Rate Limiting](#per-channel-rate-limiting) for details.
+
 | `racer.retention.stream-max-len` | `10000` | Max entries to keep in durable streams (XTRIM) |
 | `racer.retention.dlq-max-age-hours` | `72` | DLQ entries older than this are pruned |
 | `racer.retention.schedule-cron` | `0 0 * * * *` | Cron for automatic retention runs (hourly by default) |
@@ -263,6 +266,8 @@ java -jar racer-benchmark/target/benchmarks.jar
 | `racer.circuit-breaker.listeners.<id>.sliding-window-size` | — | Per-listener override for sliding window size; falls back to global when absent (v1.4) |
 | `racer.circuit-breaker.listeners.<id>.wait-duration-in-open-state-seconds` | — | Per-listener override for open-state wait duration; falls back to global when absent (v1.4) |
 | `racer.circuit-breaker.listeners.<id>.permitted-calls-in-half-open-state` | — | Per-listener override for HALF_OPEN probe count; falls back to global when absent (v1.4) |
+
+> **v1.6 validation:** Circuit breaker `listeners.<id>` keys are cross-referenced against registered listener IDs after all beans are initialized. Mismatched IDs log a warning; when `racer.strict-channel-validation=true`, a `RacerConfigurationException` is thrown instead.
 | `racer.backpressure.enabled` | `false` | Enable queue-fill back-pressure monitoring (`RacerBackPressureMonitor`) |
 | `racer.backpressure.queue-threshold` | `0.80` | Queue fill ratio (0.0–1.0) above which back-pressure is activated |
 | `racer.backpressure.check-interval-ms` | `1000` | How often (ms) the monitor checks the queue fill ratio |
@@ -275,6 +280,7 @@ java -jar racer-benchmark/target/benchmarks.jar
 | `racer.thread-pool.queue-capacity` | `1000` | Bounded task queue depth for the Racer thread pool |
 | `racer.thread-pool.keep-alive-seconds` | `60` | Idle thread timeout (seconds) above `core-size` |
 | `racer.thread-pool.thread-name-prefix` | `racer-worker-` | Thread name prefix — visible in thread dumps and profilers |
+| `racer.consumer.max-batch-size` | `25` | Maximum `batchSize` allowed on `@RacerStreamListener`. Startup fails if any listener exceeds this ceiling, preventing thread-pool exhaustion (v1.6) |
 | `management.endpoints.web.exposure.include` | `health,info` | Actuator endpoints to expose (add `metrics,prometheus`) |
 | `management.metrics.tags.application` | — | Tag all metrics with app name |
 | `logging.level.com.cheetah.racer` | `DEBUG` | Log level |
@@ -798,6 +804,10 @@ public void handleOrder(String rawPayload) {
 | `mode` | `ConcurrencyMode` | `SEQUENTIAL` | Dispatch strategy — see table below. |
 | `concurrency` | `int` | `4` | Maximum parallel in-flight messages when `mode = CONCURRENT`. |
 | `id` | `String` | `""` | Optional listener ID used in metrics tags and log messages. Defaults to `<BeanName>#<methodName>`. |
+| `dedup` | `boolean` | `false` | Enable Redis-backed duplicate suppression when `racer.dedup.enabled=true`. |
+| `dedupKey` | `String` | `""` | JSON field name to use as the dedup key instead of the envelope ID. |
+
+> **v1.6 fail-fast:** Setting `dedup = true` while `racer.dedup.enabled` is `false` now throws a `RacerConfigurationException` at startup instead of silently ignoring the flag.
 
 **`ConcurrencyMode` values**
 
@@ -876,10 +886,12 @@ public void handleEntry(String rawPayload) { ... }
 | `group` | `String` | `"racer-durable-consumers"` | Consumer group name. Created automatically if it does not exist. |
 | `mode` | `ConcurrencyMode` | `SEQUENTIAL` | `SEQUENTIAL` = 1 consumer loop; `CONCURRENT` = up to `concurrency` loops. |
 | `concurrency` | `int` | `1` | Number of independent named consumer loops in the group. |
-| `batchSize` | `int` | `1` | XREADGROUP COUNT — entries per poll cycle. |
+| `batchSize` | `int` | `1` | XREADGROUP COUNT — entries per poll cycle. Capped at `racer.consumer.max-batch-size` (default `25`); startup fails if exceeded (v1.6). Values above `10` log a warning. |
 | `pollIntervalMs` | `long` | `200` | Milliseconds to wait between polls when the stream is empty. |
 | `id` | `String` | `""` | Optional consumer ID used in metrics tags and log output. |
 | `dedup` | `boolean` | `false` | Enable Redis-backed duplicate suppression for this explicit stream listener when `racer.dedup.enabled=true`. |
+
+> **v1.6 fail-fast:** Setting `dedup = true` on a listener while `racer.dedup.enabled` is `false` now throws a `RacerConfigurationException` at startup instead of silently ignoring the flag.
 
 **Supported parameter types:** same as `@RacerListener` — `RacerMessage`, `String`, any POJO `T` (auto-deserialized).
 

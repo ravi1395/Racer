@@ -1,13 +1,22 @@
 package com.cheetah.racer.config;
 
+import java.util.HashSet;
+import java.util.Optional;
+import java.util.Set;
+
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.EnableAspectJAutoProxy;
 import org.springframework.context.annotation.Import;
 
+import com.cheetah.racer.listener.RacerListenerRegistrar;
 import com.cheetah.racer.publisher.IdGenerator;
 import com.cheetah.racer.publisher.MessageEnvelopeBuilder;
+import com.cheetah.racer.stream.RacerStreamListenerRegistrar;
+
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * Core Racer auto-configuration entry point.
@@ -39,6 +48,7 @@ import com.cheetah.racer.publisher.MessageEnvelopeBuilder;
                 RacerStreamAutoConfiguration.class,
                 RacerResilienceAutoConfiguration.class
 })
+@Slf4j
 public class RacerAutoConfiguration {
 
         /**
@@ -116,6 +126,42 @@ public class RacerAutoConfiguration {
                 IdGenerator generator = MessageEnvelopeBuilder.fastUuidGenerator();
                 MessageEnvelopeBuilder.setIdGenerator(generator);
                 return generator;
+        }
+
+        /**
+         * NFD-3: Cross-references {@code racer.circuit-breaker.listeners.<id>} keys
+         * against actual registered listener IDs after all beans have been initialized.
+         * Logs a WARN for each override key that does not match any known listener,
+         * or throws if {@code strict-channel-validation} is enabled.
+         */
+        @Bean
+        public SmartInitializingSingleton racerCircuitBreakerOverrideValidator(
+                        RacerProperties props,
+                        Optional<RacerListenerRegistrar> listenerRegistrar,
+                        Optional<RacerStreamListenerRegistrar> streamRegistrar) {
+                return () -> {
+                        if (!props.getCircuitBreaker().isEnabled()
+                                        || props.getCircuitBreaker().getListeners().isEmpty()) {
+                                return;
+                        }
+                        Set<String> knownIds = new HashSet<>();
+                        listenerRegistrar.ifPresent(r -> knownIds.addAll(r.getListenerRegistrations().keySet()));
+                        streamRegistrar.ifPresent(r -> knownIds.addAll(r.getStreamListenerRegistrations().keySet()));
+
+                        for (String overrideId : props.getCircuitBreaker().getListeners().keySet()) {
+                                if (!knownIds.contains(overrideId)) {
+                                        String message = "Circuit breaker override '" + overrideId
+                                                        + "' does not match any registered listener ID. "
+                                                        + "Known listener IDs: " + knownIds + ". "
+                                                        + "This override will have no effect.";
+                                        if (props.isStrictChannelValidation()) {
+                                                throw new com.cheetah.racer.exception.RacerConfigurationException(
+                                                                message);
+                                        }
+                                        log.warn("[RACER] {}", message);
+                                }
+                        }
+                };
         }
 
 }

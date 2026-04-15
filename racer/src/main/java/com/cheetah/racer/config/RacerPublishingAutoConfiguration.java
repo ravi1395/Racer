@@ -83,6 +83,16 @@ public class RacerPublishingAutoConfiguration {
     }
 
     /**
+     * CUX-1: Best-effort startup check that warns when a @PublishResult method
+     * exists on a concrete class without self-injection, making silent
+     * self-invocation bypass likely.
+     */
+    @Bean
+    public PublishResultSelfInvocationValidator publishResultSelfInvocationValidator() {
+        return new PublishResultSelfInvocationValidator();
+    }
+
+    /**
      * Durable Redis Streams publisher used by {@code @PublishResult(durable=true)}.
      */
     @Bean

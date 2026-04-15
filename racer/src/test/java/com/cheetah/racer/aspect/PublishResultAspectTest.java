@@ -1,5 +1,32 @@
 package com.cheetah.racer.aspect;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import org.aspectj.lang.ProceedingJoinPoint;
+import org.aspectj.lang.reflect.MethodSignature;
+import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
+import org.mockito.Mock;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
+import org.springframework.data.redis.connection.stream.RecordId;
+
 import com.cheetah.racer.annotation.ConcurrencyMode;
 import com.cheetah.racer.annotation.PublishResult;
 import com.cheetah.racer.annotation.PublishResults;
@@ -11,28 +38,10 @@ import com.cheetah.racer.publisher.RacerChannelPublisher;
 import com.cheetah.racer.publisher.RacerPriorityPublisher;
 import com.cheetah.racer.publisher.RacerPublisherRegistry;
 import com.cheetah.racer.publisher.RacerStreamPublisher;
-import org.aspectj.lang.ProceedingJoinPoint;
-import org.aspectj.lang.reflect.MethodSignature;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.mockito.junit.jupiter.MockitoSettings;
-import org.mockito.quality.Strictness;
-import org.springframework.data.redis.connection.stream.RecordId;
+
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
-
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
 
 /**
  * Unit tests for {@link PublishResultAspect}, covering both SEQUENTIAL
@@ -42,11 +51,16 @@ import static org.mockito.Mockito.*;
 @MockitoSettings(strictness = Strictness.LENIENT)
 class PublishResultAspectTest {
 
-    @Mock RacerPublisherRegistry  registry;
-    @Mock RacerChannelPublisher   publisher;
-    @Mock RacerStreamPublisher    streamPublisher;
-    @Mock ProceedingJoinPoint     pjp;
-    @Mock PublishResult           annotation;
+    @Mock
+    RacerPublisherRegistry registry;
+    @Mock
+    RacerChannelPublisher publisher;
+    @Mock
+    RacerStreamPublisher streamPublisher;
+    @Mock
+    ProceedingJoinPoint pjp;
+    @Mock
+    PublishResult annotation;
 
     PublishResultAspect aspect;
 
@@ -137,18 +151,16 @@ class PublishResultAspectTest {
         when(annotation.mode()).thenReturn(ConcurrencyMode.CONCURRENT);
         when(annotation.concurrency()).thenReturn(concurrency);
 
-        AtomicInteger maxInFlight  = new AtomicInteger(0);
+        AtomicInteger maxInFlight = new AtomicInteger(0);
         AtomicInteger currentCount = new AtomicInteger(0);
 
-        when(publisher.publishAsync(any(), anyString())).thenAnswer(inv ->
-                Mono.fromCallable(() -> {
-                    int current = currentCount.incrementAndGet();
-                    maxInFlight.updateAndGet(prev -> Math.max(prev, current));
-                    Thread.sleep(30);
-                    currentCount.decrementAndGet();
-                    return 1L;
-                })
-        );
+        when(publisher.publishAsync(any(), anyString())).thenAnswer(inv -> Mono.fromCallable(() -> {
+            int current = currentCount.incrementAndGet();
+            maxInFlight.updateAndGet(prev -> Math.max(prev, current));
+            Thread.sleep(30);
+            currentCount.decrementAndGet();
+            return 1L;
+        }));
 
         when(pjp.proceed()).thenReturn(Flux.range(1, 6));
 
@@ -276,7 +288,7 @@ class PublishResultAspectTest {
         when(ann2.priority()).thenReturn(PriorityLevel.NONE);
 
         PublishResults container = mock(PublishResults.class);
-        when(container.value()).thenReturn(new PublishResult[]{ann1, ann2});
+        when(container.value()).thenReturn(new PublishResult[] { ann1, ann2 });
 
         // Build a PJP with a MethodSignature (no priority annotation)
         MethodSignature sig = mock(MethodSignature.class);
@@ -311,7 +323,7 @@ class PublishResultAspectTest {
         when(ann2.priority()).thenReturn(PriorityLevel.NONE);
 
         PublishResults container = mock(PublishResults.class);
-        when(container.value()).thenReturn(new PublishResult[]{annotation, ann2});
+        when(container.value()).thenReturn(new PublishResult[] { annotation, ann2 });
 
         MethodSignature sig = mock(MethodSignature.class);
         when(sig.getMethod()).thenReturn(getClass().getDeclaredMethod("dummyMethod"));
@@ -345,7 +357,7 @@ class PublishResultAspectTest {
         when(ann2.priority()).thenReturn(PriorityLevel.NONE);
 
         PublishResults container = mock(PublishResults.class);
-        when(container.value()).thenReturn(new PublishResult[]{annotation, ann2});
+        when(container.value()).thenReturn(new PublishResult[] { annotation, ann2 });
 
         MethodSignature sig = mock(MethodSignature.class);
         when(sig.getMethod()).thenReturn(getClass().getDeclaredMethod("dummyMethod"));
@@ -380,7 +392,8 @@ class PublishResultAspectTest {
         ((Mono<?>) result).block();
 
         // Should route via priority publisher, NOT the regular one
-        verify(priorityPub, times(1)).publish(eq(CHANNEL), eq("urgent-payload"), eq("test-sender"), eq(PriorityLevel.HIGH));
+        verify(priorityPub, times(1)).publish(eq(CHANNEL), eq("urgent-payload"), eq("test-sender"),
+                eq(PriorityLevel.HIGH));
         verify(publisher, never()).publishAsync(any(), anyString());
     }
 
@@ -400,7 +413,8 @@ class PublishResultAspectTest {
         Object result = aspect.intercept(pjp, annotation);
         assertThat(result).isEqualTo("plain-priority");
 
-        verify(priorityPub, times(1)).publish(eq(CHANNEL), eq("plain-priority"), eq("test-sender"), eq(PriorityLevel.HIGH));
+        verify(priorityPub, times(1)).publish(eq(CHANNEL), eq("plain-priority"), eq("test-sender"),
+                eq(PriorityLevel.HIGH));
         verify(publisher, never()).publishAsync(any(), anyString());
     }
 
@@ -449,9 +463,10 @@ class PublishResultAspectTest {
         when(ann2.priority()).thenReturn(PriorityLevel.NONE); // no priority
 
         PublishResults container = mock(PublishResults.class);
-        when(container.value()).thenReturn(new PublishResult[]{annotation, ann2});
+        when(container.value()).thenReturn(new PublishResult[] { annotation, ann2 });
 
-        // Build PJP with a method that has NO @RacerPriority (priority lives on annotation)
+        // Build PJP with a method that has NO @RacerPriority (priority lives on
+        // annotation)
         MethodSignature sig = mock(MethodSignature.class);
         when(sig.getMethod()).thenReturn(getClass().getDeclaredMethod("dummyMethod"));
         when(pjp.getSignature()).thenReturn(sig);
@@ -484,12 +499,14 @@ class PublishResultAspectTest {
 
     /** Dummy method without @RacerPriority — used for MethodSignature mocking. */
     @SuppressWarnings("unused")
-    private void dummyMethod() {}
+    private void dummyMethod() {
+    }
 
     /** Method annotated with @RacerPriority — used for MethodSignature mocking. */
     @RacerPriority(defaultLevel = PriorityLevel.HIGH)
     @SuppressWarnings("unused")
-    private void priorityAnnotatedMethod() {}
+    private void priorityAnnotatedMethod() {
+    }
 
     // ── Reactive upstream error handlers ─────────────────────────────────────
 
@@ -636,9 +653,9 @@ class PublishResultAspectTest {
 
         PublishResultAspect aspectWithProps = new PublishResultAspect(registry, streamPublisher, props);
 
-        when(annotation.sender()).thenReturn("");            // blank → fall through to props
+        when(annotation.sender()).thenReturn(""); // blank → fall through to props
         when(annotation.channelRef()).thenReturn("orders");
-        when(annotation.channel()).thenReturn(CHANNEL);     // direct channel name still there
+        when(annotation.channel()).thenReturn(CHANNEL); // direct channel name still there
         when(pjp.proceed()).thenReturn("payload");
 
         Object result = aspectWithProps.intercept(pjp, annotation);
@@ -650,10 +667,11 @@ class PublishResultAspectTest {
     @Test
     void threeArgConstructor_channelRefNotInProps_fallsBackToDefaultSender() throws Throwable {
         RacerProperties props = new RacerProperties(); // empty channels map
+        props.setStrictChannelValidation(false); // allow unknown alias fallback
 
         PublishResultAspect aspectWithProps = new PublishResultAspect(registry, streamPublisher, props);
 
-        when(annotation.sender()).thenReturn("");            // blank → fall through
+        when(annotation.sender()).thenReturn(""); // blank → fall through
         when(annotation.channelRef()).thenReturn("unknown-ref");
         when(annotation.channel()).thenReturn(CHANNEL);
         when(pjp.proceed()).thenReturn("payload");
@@ -682,7 +700,8 @@ class PublishResultAspectTest {
 
         aspectWithProps.intercept(pjp, annotation);
 
-        // Sync path: still calls publishAsync (it's the underlying API) but via sync branch
+        // Sync path: still calls publishAsync (it's the underlying API) but via sync
+        // branch
         verify(publisher, times(1)).publishAsync(eq("sync-payload"), eq("svc"));
     }
 
@@ -798,7 +817,8 @@ class PublishResultAspectTest {
         Object result = aspect.intercept(pjp, annotation);
         assertThat(result).isEqualTo("async-priority");
 
-        verify(priorityPub, times(1)).publish(eq(CHANNEL), eq("async-priority"), eq("test-sender"), eq(PriorityLevel.HIGH));
+        verify(priorityPub, times(1)).publish(eq(CHANNEL), eq("async-priority"), eq("test-sender"),
+                eq(PriorityLevel.HIGH));
     }
 
     @Test
@@ -818,7 +838,8 @@ class PublishResultAspectTest {
         Object result = aspect.intercept(pjp, annotation);
         assertThat(result).isEqualTo("sync-priority");
 
-        verify(priorityPub, times(1)).publish(eq(CHANNEL), eq("sync-priority"), eq("test-sender"), eq(PriorityLevel.HIGH));
+        verify(priorityPub, times(1)).publish(eq(CHANNEL), eq("sync-priority"), eq("test-sender"),
+                eq(PriorityLevel.HIGH));
     }
 
     // ── Priority concurrent paths ─────────────────────────────────────────────
@@ -867,6 +888,7 @@ class PublishResultAspectTest {
         assertThat(result).isSameAs(msgWithPriority);
 
         // message priority "low" -> toUpperCase() -> "LOW"
-        verify(priorityPub, times(1)).publish(eq(CHANNEL), eq(msgWithPriority), eq("test-sender"), eq(PriorityLevel.LOW));
+        verify(priorityPub, times(1)).publish(eq(CHANNEL), eq(msgWithPriority), eq("test-sender"),
+                eq(PriorityLevel.LOW));
     }
 }

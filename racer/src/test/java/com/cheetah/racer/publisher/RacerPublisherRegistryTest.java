@@ -95,6 +95,12 @@ class RacerPublisherRegistryTest {
 
     @Test
     void getPublisher_unknownAlias_fallsBackToDefault() {
+        // Lenient mode required: unknown alias falls back to default instead of
+        // throwing
+        properties.setStrictChannelValidation(false);
+        registry = RacerPublisherRegistry.forTesting(properties, redisTemplate, objectMapper);
+        registry.init();
+
         RacerChannelPublisher pub = registry.getPublisher("does-not-exist");
 
         assertThat(pub.getChannelName()).isEqualTo("racer:messages");
@@ -129,6 +135,7 @@ class RacerPublisherRegistryTest {
     void channelWithBlankName_isSkippedDuringInit() {
         RacerProperties props = new RacerProperties();
         props.setDefaultChannel("racer:messages");
+        props.setStrictChannelValidation(false); // lenient: unknown alias falls back to default
 
         RacerProperties.ChannelProperties blank = new RacerProperties.ChannelProperties();
         blank.setName("   "); // blank name

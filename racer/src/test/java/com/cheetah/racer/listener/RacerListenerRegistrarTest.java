@@ -1,41 +1,5 @@
 package com.cheetah.racer.listener;
 
-import com.cheetah.racer.circuitbreaker.RacerCircuitBreaker;
-import com.cheetah.racer.circuitbreaker.RacerCircuitBreakerRegistry;
-import com.cheetah.racer.dedup.RacerDedupService;
-import com.cheetah.racer.annotation.ConcurrencyMode;
-import com.cheetah.racer.annotation.RacerListener;
-import com.cheetah.racer.config.RacerProperties;
-import com.cheetah.racer.metrics.RacerMetrics;
-import com.cheetah.racer.router.RouteDecision;
-import com.cheetah.racer.model.RacerMessage;
-import com.cheetah.racer.router.RacerRouterService;
-import com.cheetah.racer.schema.RacerSchemaRegistry;
-import com.cheetah.racer.schema.SchemaValidationException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.mockito.junit.jupiter.MockitoSettings;
-import org.mockito.quality.Strictness;
-import org.springframework.core.env.Environment;
-import org.springframework.data.redis.connection.ReactiveSubscription;
-import org.springframework.data.redis.core.ReactiveRedisTemplate;
-import org.springframework.data.redis.core.ReactiveStreamOperations;
-import org.springframework.data.redis.connection.stream.Consumer;
-import org.springframework.data.redis.connection.stream.StreamReadOptions;
-import org.springframework.data.redis.connection.stream.StreamOffset;
-import org.springframework.data.redis.connection.stream.ReadOffset;
-import org.springframework.data.redis.listener.ChannelTopic;
-import org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
-import reactor.core.publisher.Sinks;
-import reactor.core.scheduler.Schedulers;
-
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -44,8 +8,56 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import org.mockito.Mock;
+import static org.mockito.Mockito.atLeast;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
+import org.springframework.core.env.Environment;
+import org.springframework.data.redis.connection.ReactiveSubscription;
+import org.springframework.data.redis.connection.stream.Consumer;
+import org.springframework.data.redis.connection.stream.ReadOffset;
+import org.springframework.data.redis.connection.stream.StreamOffset;
+import org.springframework.data.redis.connection.stream.StreamReadOptions;
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
+import org.springframework.data.redis.core.ReactiveStreamOperations;
+import org.springframework.data.redis.listener.ChannelTopic;
+import org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;
+
+import com.cheetah.racer.annotation.ConcurrencyMode;
+import com.cheetah.racer.annotation.RacerListener;
+import com.cheetah.racer.circuitbreaker.RacerCircuitBreaker;
+import com.cheetah.racer.circuitbreaker.RacerCircuitBreakerRegistry;
+import com.cheetah.racer.config.RacerProperties;
+import com.cheetah.racer.dedup.RacerDedupService;
+import com.cheetah.racer.exception.RacerConfigurationException;
+import com.cheetah.racer.metrics.RacerMetrics;
+import com.cheetah.racer.model.RacerMessage;
+import com.cheetah.racer.router.RacerRouterService;
+import com.cheetah.racer.router.RouteDecision;
+import com.cheetah.racer.schema.RacerSchemaRegistry;
+import com.cheetah.racer.schema.SchemaValidationException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * Unit tests for {@link RacerListenerRegistrar}.
@@ -59,10 +71,10 @@ class RacerListenerRegistrarTest {
     /** Simple test bean whose methods are discovered by the registrar. */
     static class SampleReceiver {
 
-        final List<RacerMessage> received        = new ArrayList<>();
-        final List<String>       receivedStrings = new ArrayList<>();
-        final List<SampleDto>    receivedDtos    = new ArrayList<>();
-        final AtomicInteger      invocations     = new AtomicInteger(0);
+        final List<RacerMessage> received = new ArrayList<>();
+        final List<String> receivedStrings = new ArrayList<>();
+        final List<SampleDto> receivedDtos = new ArrayList<>();
+        final AtomicInteger invocations = new AtomicInteger(0);
 
         @RacerListener(channel = "racer:test")
         public void onMessage(RacerMessage msg) {
@@ -102,12 +114,18 @@ class RacerListenerRegistrarTest {
 
     // ── Mocks and collaborators ───────────────────────────────────────────────
 
-    @Mock ReactiveRedisMessageListenerContainer listenerContainer;
-    @Mock RacerMetrics                          racerMetrics;
-    @Mock RacerSchemaRegistry                   racerSchemaRegistry;
-    @Mock RacerRouterService                    racerRouterService;
-    @Mock RacerDeadLetterHandler                deadLetterHandler;
-    @Mock Environment                           environment;
+    @Mock
+    ReactiveRedisMessageListenerContainer listenerContainer;
+    @Mock
+    RacerMetrics racerMetrics;
+    @Mock
+    RacerSchemaRegistry racerSchemaRegistry;
+    @Mock
+    RacerRouterService racerRouterService;
+    @Mock
+    RacerDeadLetterHandler deadLetterHandler;
+    @Mock
+    Environment environment;
 
     ObjectMapper objectMapper;
     RacerProperties properties;
@@ -117,7 +135,7 @@ class RacerListenerRegistrarTest {
     @BeforeEach
     void setUp() {
         objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
-        properties   = new RacerProperties();
+        properties = new RacerProperties();
         properties.setChannels(new LinkedHashMap<>());
 
         // Stub environment to pass through values unchanged
@@ -147,7 +165,9 @@ class RacerListenerRegistrarTest {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    /** Creates a Flux that emits a single serialized RacerMessage then completes. */
+    /**
+     * Creates a Flux that emits a single serialized RacerMessage then completes.
+     */
     private Flux<ReactiveSubscription.Message<String, String>> singleMessageFlux(RacerMessage msg)
             throws Exception {
         String json = objectMapper.writeValueAsString(msg);
@@ -175,7 +195,8 @@ class RacerListenerRegistrarTest {
         when(listenerContainer.receive(any(ChannelTopic.class)))
                 .thenAnswer(inv -> {
                     ChannelTopic t = inv.getArgument(0);
-                    if ("racer:test".equals(t.getTopic())) return singleMessageFlux(msg);
+                    if ("racer:test".equals(t.getTopic()))
+                        return singleMessageFlux(msg);
                     return Flux.never();
                 });
 
@@ -195,7 +216,8 @@ class RacerListenerRegistrarTest {
         when(listenerContainer.receive(any(ChannelTopic.class)))
                 .thenAnswer(inv -> {
                     ChannelTopic t = inv.getArgument(0);
-                    if ("racer:strings".equals(t.getTopic())) return singleMessageFlux(msg);
+                    if ("racer:strings".equals(t.getTopic()))
+                        return singleMessageFlux(msg);
                     return Flux.never();
                 });
 
@@ -211,14 +233,15 @@ class RacerListenerRegistrarTest {
     @Test
     void listener_withPojoParam_deserializesPayloadIntoType() throws Exception {
         SampleDto dto = new SampleDto();
-        dto.name  = "widget";
+        dto.name = "widget";
         dto.value = 42;
         RacerMessage msg = buildMessage("racer:dtos", objectMapper.writeValueAsString(dto));
 
         when(listenerContainer.receive(any(ChannelTopic.class)))
                 .thenAnswer(inv -> {
                     ChannelTopic t = inv.getArgument(0);
-                    if ("racer:dtos".equals(t.getTopic())) return singleMessageFlux(msg);
+                    if ("racer:dtos".equals(t.getTopic()))
+                        return singleMessageFlux(msg);
                     return Flux.never();
                 });
 
@@ -239,7 +262,8 @@ class RacerListenerRegistrarTest {
         when(listenerContainer.receive(any(ChannelTopic.class)))
                 .thenAnswer(inv -> {
                     ChannelTopic t = inv.getArgument(0);
-                    if ("racer:mono".equals(t.getTopic())) return singleMessageFlux(msg);
+                    if ("racer:mono".equals(t.getTopic()))
+                        return singleMessageFlux(msg);
                     return Flux.never();
                 });
 
@@ -271,8 +295,7 @@ class RacerListenerRegistrarTest {
             }
         };
 
-        Sinks.Many<ReactiveSubscription.Message<String, String>> sink =
-                Sinks.many().multicast().onBackpressureBuffer();
+        Sinks.Many<ReactiveSubscription.Message<String, String>> sink = Sinks.many().multicast().onBackpressureBuffer();
 
         when(listenerContainer.receive(ChannelTopic.of("racer:concurrent"))).thenReturn(sink.asFlux());
 
@@ -311,8 +334,7 @@ class RacerListenerRegistrarTest {
             }
         };
 
-        Sinks.Many<ReactiveSubscription.Message<String, String>> sink =
-                Sinks.many().unicast().onBackpressureBuffer();
+        Sinks.Many<ReactiveSubscription.Message<String, String>> sink = Sinks.many().unicast().onBackpressureBuffer();
 
         when(listenerContainer.receive(ChannelTopic.of("racer:seq"))).thenReturn(sink.asFlux());
 
@@ -337,7 +359,8 @@ class RacerListenerRegistrarTest {
         when(listenerContainer.receive(any(ChannelTopic.class)))
                 .thenAnswer(inv -> {
                     ChannelTopic t = inv.getArgument(0);
-                    if ("racer:error".equals(t.getTopic())) return singleMessageFlux(msg);
+                    if ("racer:error".equals(t.getTopic()))
+                        return singleMessageFlux(msg);
                     return Flux.never();
                 });
 
@@ -354,7 +377,8 @@ class RacerListenerRegistrarTest {
         when(listenerContainer.receive(any(ChannelTopic.class)))
                 .thenAnswer(inv -> {
                     ChannelTopic t = inv.getArgument(0);
-                    if ("racer:error".equals(t.getTopic())) return singleMessageFlux(msg);
+                    if ("racer:error".equals(t.getTopic()))
+                        return singleMessageFlux(msg);
                     return Flux.never();
                 });
 
@@ -376,7 +400,8 @@ class RacerListenerRegistrarTest {
         when(listenerContainer.receive(any(ChannelTopic.class)))
                 .thenAnswer(inv -> {
                     ChannelTopic t = inv.getArgument(0);
-                    if ("racer:test".equals(t.getTopic())) return singleMessageFlux(msg);
+                    if ("racer:test".equals(t.getTopic()))
+                        return singleMessageFlux(msg);
                     return Flux.never();
                 });
 
@@ -398,7 +423,8 @@ class RacerListenerRegistrarTest {
         when(listenerContainer.receive(any(ChannelTopic.class)))
                 .thenAnswer(inv -> {
                     ChannelTopic t = inv.getArgument(0);
-                    if ("racer:test".equals(t.getTopic())) return singleMessageFlux(msg);
+                    if ("racer:test".equals(t.getTopic()))
+                        return singleMessageFlux(msg);
                     return Flux.never();
                 });
 
@@ -419,7 +445,8 @@ class RacerListenerRegistrarTest {
 
         Object aliasBean = new Object() {
             @RacerListener(channelRef = "myalias")
-            public void onAliased(RacerMessage msg) {}
+            public void onAliased(RacerMessage msg) {
+            }
         };
 
         when(listenerContainer.receive(ChannelTopic.of("racer:resolved:channel"))).thenReturn(Flux.never());
@@ -438,7 +465,8 @@ class RacerListenerRegistrarTest {
         when(listenerContainer.receive(any(ChannelTopic.class)))
                 .thenAnswer(inv -> {
                     ChannelTopic t = inv.getArgument(0);
-                    if ("racer:test".equals(t.getTopic())) return singleMessageFlux(msg);
+                    if ("racer:test".equals(t.getTopic()))
+                        return singleMessageFlux(msg);
                     return Flux.never();
                 });
 
@@ -467,7 +495,8 @@ class RacerListenerRegistrarTest {
         when(listenerContainer.receive(any(ChannelTopic.class)))
                 .thenAnswer(inv -> {
                     ChannelTopic t = inv.getArgument(0);
-                    if ("racer:test".equals(t.getTopic())) return singleMessageFlux(msg);
+                    if ("racer:test".equals(t.getTopic()))
+                        return singleMessageFlux(msg);
                     return Flux.never();
                 });
 
@@ -483,8 +512,8 @@ class RacerListenerRegistrarTest {
     @Test
     void setBackPressureActive_toggleLogsChangeOnce() {
         registrar.setBackPressureActive(true);
-        registrar.setBackPressureActive(true);   // same value — no log
-        registrar.setBackPressureActive(false);  // transition
+        registrar.setBackPressureActive(true); // same value — no log
+        registrar.setBackPressureActive(false); // transition
         // No assert needed — just must not throw
     }
 
@@ -492,6 +521,9 @@ class RacerListenerRegistrarTest {
 
     @Test
     void listener_withDedup_duplicateMessageSkipped() throws Exception {
+        // Enable dedup globally so NFD-1 validation passes for dedup=true listeners
+        properties.getDedup().setEnabled(true);
+
         RacerDedupService dedupService = mock(RacerDedupService.class);
         // First call returns true (process), second returns false (skip)
         when(dedupService.checkAndMarkProcessed(anyString(), anyString()))
@@ -502,12 +534,12 @@ class RacerListenerRegistrarTest {
 
         Object dedupBean = new Object() {
             @RacerListener(channel = "racer:dedup", dedup = true)
-            public void handle(RacerMessage msg) {}
+            public void handle(RacerMessage msg) {
+            }
         };
 
         RacerMessage msg = buildMessage("racer:dedup", "data");
-        Sinks.Many<ReactiveSubscription.Message<String, String>> sink =
-                Sinks.many().unicast().onBackpressureBuffer();
+        Sinks.Many<ReactiveSubscription.Message<String, String>> sink = Sinks.many().unicast().onBackpressureBuffer();
 
         when(listenerContainer.receive(ChannelTopic.of("racer:dedup"))).thenReturn(sink.asFlux());
         registrar.postProcessAfterInitialization(dedupBean, "dedupBean");
@@ -521,6 +553,23 @@ class RacerListenerRegistrarTest {
 
         // First is processed, second is skipped — dedup service consulted twice
         verify(dedupService, atLeast(1)).checkAndMarkProcessed(anyString(), anyString());
+    }
+
+    @Test
+    void listener_withDedupTrue_butGlobalDedupDisabled_throwsConfigException() {
+        // NFD-1: dedup=true on annotation but racer.dedup.enabled=false → fail fast
+        properties.getDedup().setEnabled(false);
+
+        Object dedupBean = new Object() {
+            @RacerListener(channel = "racer:dedup", dedup = true)
+            public void handle(RacerMessage msg) {
+            }
+        };
+
+        assertThatThrownBy(() -> registrar.postProcessAfterInitialization(dedupBean, "dedupBean"))
+                .isInstanceOf(RacerConfigurationException.class)
+                .hasMessageContaining("dedup=true")
+                .hasMessageContaining("racer.dedup.enabled");
     }
 
     // ── Tests: circuit breaker ────────────────────────────────────────────────
@@ -539,7 +588,8 @@ class RacerListenerRegistrarTest {
         when(listenerContainer.receive(any(ChannelTopic.class)))
                 .thenAnswer(inv -> {
                     ChannelTopic t = inv.getArgument(0);
-                    if ("racer:test".equals(t.getTopic())) return singleMessageFlux(msg);
+                    if ("racer:test".equals(t.getTopic()))
+                        return singleMessageFlux(msg);
                     return Flux.never();
                 });
 
@@ -559,7 +609,8 @@ class RacerListenerRegistrarTest {
         when(listenerContainer.receive(any(ChannelTopic.class)))
                 .thenAnswer(inv -> {
                     ChannelTopic t = inv.getArgument(0);
-                    if ("racer:test".equals(t.getTopic())) return Flux.just(badMsg);
+                    if ("racer:test".equals(t.getTopic()))
+                        return Flux.just(badMsg);
                     return Flux.never();
                 });
 
@@ -578,7 +629,8 @@ class RacerListenerRegistrarTest {
 
         Object noChannelBean = new Object() {
             @RacerListener(channel = "", channelRef = "")
-            public void handle(RacerMessage msg) {}
+            public void handle(RacerMessage msg) {
+            }
         };
 
         // Should not throw and should not call listenerContainer.receive
@@ -614,8 +666,10 @@ class RacerListenerRegistrarTest {
     // ── Tests: durable listener poll interval ─────────────────────────────────
 
     /**
-     * A durable listener annotated with {@code pollIntervalMs=50} should re-poll the
-     * stream roughly every 50 ms. Within 300 ms we expect at least 3 XREADGROUP calls
+     * A durable listener annotated with {@code pollIntervalMs=50} should re-poll
+     * the
+     * stream roughly every 50 ms. Within 300 ms we expect at least 3 XREADGROUP
+     * calls
      * (initial + ≥2 re-polls), proving that the annotation value is used instead of
      * the old hard-coded 200 ms default.
      */
@@ -625,13 +679,18 @@ class RacerListenerRegistrarTest {
         ReactiveRedisTemplate<String, String> template = mock(ReactiveRedisTemplate.class);
         ReactiveStreamOperations<String, Object, Object> streamOps = mock(ReactiveStreamOperations.class);
         when(template.opsForStream()).thenReturn(streamOps);
-        // ensureGroup: createGroup returns a String Mono (BUSYGROUP errors silently ignored anyway)
+        // ensureGroup: createGroup returns a String Mono (BUSYGROUP errors silently
+        // ignored anyway)
         when(streamOps.createGroup(any(), any(ReadOffset.class), anyString()))
                 .thenReturn(Mono.just("OK"));
         AtomicInteger readCallCount = new AtomicInteger(0);
-        // pollOnceDurable: read returns an empty batch so each poll completes immediately
+        // pollOnceDurable: read returns an empty batch so each poll completes
+        // immediately
         when(streamOps.read(any(Consumer.class), any(StreamReadOptions.class), any(StreamOffset.class)))
-                .thenAnswer(inv -> { readCallCount.incrementAndGet(); return Flux.empty(); });
+                .thenAnswer(inv -> {
+                    readCallCount.incrementAndGet();
+                    return Flux.empty();
+                });
 
         RacerProperties.ChannelProperties cp = new RacerProperties.ChannelProperties();
         cp.setName("racer:durable:fast");
@@ -645,7 +704,8 @@ class RacerListenerRegistrarTest {
 
         Object durableBean = new Object() {
             @RacerListener(channelRef = "fastref", pollIntervalMs = 50)
-            public void handle(RacerMessage msg) {}
+            public void handle(RacerMessage msg) {
+            }
         };
 
         durableRegistrar.postProcessAfterInitialization(durableBean, "fastDurableBean");
@@ -675,7 +735,10 @@ class RacerListenerRegistrarTest {
                 .thenReturn(Mono.just("OK"));
         AtomicInteger readCallCount = new AtomicInteger(0);
         when(streamOps.read(any(Consumer.class), any(StreamReadOptions.class), any(StreamOffset.class)))
-                .thenAnswer(inv -> { readCallCount.incrementAndGet(); return Flux.empty(); });
+                .thenAnswer(inv -> {
+                    readCallCount.incrementAndGet();
+                    return Flux.empty();
+                });
 
         RacerProperties.ChannelProperties cp = new RacerProperties.ChannelProperties();
         cp.setName("racer:durable:slow");
@@ -689,7 +752,8 @@ class RacerListenerRegistrarTest {
 
         Object durableBean = new Object() {
             @RacerListener(channelRef = "slowref", pollIntervalMs = 5000)
-            public void handle(RacerMessage msg) {}
+            public void handle(RacerMessage msg) {
+            }
         };
 
         durableRegistrar.postProcessAfterInitialization(durableBean, "slowDurableBean");

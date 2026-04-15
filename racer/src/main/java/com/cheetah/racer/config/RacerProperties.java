@@ -29,7 +29,8 @@ public class RacerProperties {
 
     /**
      * Default Redis channel used when {@code @RacerPublisher} has no alias
-     * and {@code @PublishResult} has neither {@code channel} nor {@code channelRef}.
+     * and {@code @PublishResult} has neither {@code channel} nor
+     * {@code channelRef}.
      */
     private String defaultChannel = RedisChannels.MESSAGE_CHANNEL;
 
@@ -39,19 +40,28 @@ public class RacerProperties {
      * {@link com.cheetah.racer.exception.RacerConfigurationException} at startup
      * instead of silently falling back to the default channel.
      *
-     * <p>Enable this in all non-legacy services to catch typos such as
-     * {@code @RacerPublisher("ordres")} at startup rather than in production.
-     * Defaults to {@code false} for backward compatibility.
+     * <p>
+     * Defaults to {@code true} so typos such as
+     * {@code @RacerPublisher("ordres")} are caught at startup.
+     * Set to {@code false} to restore the legacy silent-fallback behaviour.
+     *
+     * <p>
+     * <b>Migration note (v1.5 → v1.6):</b> this default changed from {@code false}
+     * to {@code true}. Applications that rely on silent fallback must explicitly
+     * set
+     * {@code racer.strict-channel-validation=false}.
      */
-    private boolean strictChannelValidation = false;
+    private boolean strictChannelValidation = true;
 
     /**
      * ID generation strategy for message envelope {@code id} fields.
      * Valid values: {@code uuid} (default).
      *
-     * <p>The {@code uuid} strategy uses a {@code ThreadLocalRandom}-backed UUID
+     * <p>
+     * The {@code uuid} strategy uses a {@code ThreadLocalRandom}-backed UUID
      * generator (~5-10x faster than {@code SecureRandom} under high concurrency)
-     * while preserving the standard UUID wire format for deduplication compatibility.
+     * while preserving the standard UUID wire format for deduplication
+     * compatibility.
      * Mapped under {@code racer.id-strategy}.
      */
     private String idStrategy = "uuid";
@@ -75,7 +85,8 @@ public class RacerProperties {
 
         /**
          * When {@code true}, the publisher writes to a Redis Stream (XADD) instead of
-         * Pub/Sub (PUBLISH), and {@link com.cheetah.racer.listener.RacerListenerRegistrar}
+         * Pub/Sub (PUBLISH), and
+         * {@link com.cheetah.racer.listener.RacerListenerRegistrar}
          * consumes via XREADGROUP — guaranteeing at-least-once delivery even when the
          * consumer was temporarily offline. Default {@code false}.
          */
@@ -163,11 +174,13 @@ public class RacerProperties {
         private String namePrefix = "consumer";
 
         /**
-         * Maximum number of stream entries to read per poll (COUNT argument to XREADGROUP).
+         * Maximum number of stream entries to read per poll (COUNT argument to
+         * XREADGROUP).
          * Increasing this value reduces round-trip overhead and significantly improves
          * throughput. Defaults to {@code 50} (was {@code 1}).
          *
-         * <p>Migration: if you are seeing consumer lag, increase this to match your
+         * <p>
+         * Migration: if you are seeing consumer lag, increase this to match your
          * throughput — e.g. {@code racer.consumer.poll-batch-size=200}.
          */
         private int pollBatchSize = 50;
@@ -177,14 +190,33 @@ public class RacerProperties {
 
         /**
          * How long (milliseconds) the XREADGROUP command blocks waiting for new entries
-         * when the stream is empty. Setting this to a positive value enables Redis blocking
+         * when the stream is empty. Setting this to a positive value enables Redis
+         * blocking
          * reads, eliminating the busy-poll cycle and achieving instant wakeup when new
          * messages arrive. Set to {@code 0} to disable blocking reads and revert to the
          * {@link #pollIntervalMs}-based polling. Defaults to {@code 1000} (1 second).
          *
-         * <p>Example: {@code racer.consumer.block-millis=2000}
+         * <p>
+         * Example: {@code racer.consumer.block-millis=2000}
          */
         private long blockMillis = 1000;
+
+        /**
+         * Maximum allowed {@code batchSize} on any individual
+         * {@code @RacerStreamListener}.
+         * If a listener declares {@code batchSize > maxBatchSize}, application startup
+         * fails with a {@link com.cheetah.racer.exception.RacerConfigurationException}.
+         *
+         * <p>
+         * High batch sizes can exhaust the Reactor {@code boundedElastic} thread pool
+         * and stall unrelated reactive pipelines (health checks, HTTP requests).
+         * Raise this value explicitly to acknowledge the risk.
+         * Defaults to {@code 25}.
+         *
+         * <p>
+         * Example: {@code racer.consumer.max-batch-size=50}
+         */
+        private int maxBatchSize = 25;
     }
 
     /** Consumer scaling configuration. */
@@ -217,7 +249,7 @@ public class RacerProperties {
         /**
          * When {@code true} (Phase 4.1), a consistent-hash ring is used to map
          * shard keys to shard indices instead of the simple {@code CRC-16 mod N}
-         * strategy.  This allows shards to be added/removed with minimal
+         * strategy. This allows shards to be added/removed with minimal
          * redistribution.
          */
         private boolean consistentHashEnabled = false;
@@ -225,7 +257,7 @@ public class RacerProperties {
         /**
          * Number of virtual nodes placed on the hash ring per physical shard.
          * More virtual nodes improve distribution uniformity at the cost of
-         * slightly more memory.  Defaults to {@code 150}.
+         * slightly more memory. Defaults to {@code 150}.
          */
         private int virtualNodesPerShard = 150;
 
@@ -349,7 +381,8 @@ public class RacerProperties {
     public static class SchemaProperties {
 
         /**
-         * When {@code false} (default) the registry is not started and all publish/consume
+         * When {@code false} (default) the registry is not started and all
+         * publish/consume
          * paths skip validation entirely. Set to {@code true} to activate R-7.
          */
         private boolean enabled = false;
@@ -363,12 +396,14 @@ public class RacerProperties {
         /**
          * When {@code true} (default) a schema violation throws
          * {@code SchemaValidationException}, blocking the publish or consume.
-         * When {@code false} violations are logged as warnings and processing continues.
+         * When {@code false} violations are logged as warnings and processing
+         * continues.
          */
         private boolean failOnViolation = true;
 
         /**
-         * Schema definitions keyed by channel alias (matching {@code racer.channels.<alias>})
+         * Schema definitions keyed by channel alias (matching
+         * {@code racer.channels.<alias>})
          * or by literal Redis channel name.
          *
          * <pre>
@@ -392,8 +427,10 @@ public class RacerProperties {
     public static class PollProperties {
 
         /**
-         * When {@code false}, all {@code @RacerPoll} pollers are silently skipped at startup.
-         * Defaults to {@code true} — pollers are active whenever the annotation is present.
+         * When {@code false}, all {@code @RacerPoll} pollers are silently skipped at
+         * startup.
+         * Defaults to {@code true} — pollers are active whenever the annotation is
+         * present.
          */
         private boolean enabled = true;
     }
@@ -452,11 +489,15 @@ public class RacerProperties {
          * Interval in milliseconds between polls when waiting for a stream-based
          * request-reply response ({@code XREAD} on the ephemeral reply stream).
          *
-         * <p>Lower values reduce tail latency at the cost of more Redis round-trips.
-         * Higher values reduce Redis load for workloads that have naturally high latency.
+         * <p>
+         * Lower values reduce tail latency at the cost of more Redis round-trips.
+         * Higher values reduce Redis load for workloads that have naturally high
+         * latency.
          * Defaults to {@code 200} ms.
          *
-         * <p>Example:
+         * <p>
+         * Example:
+         * 
          * <pre>
          * # Halve polling latency for latency-sensitive services
          * racer.request-reply.stream-poll-interval-ms=50
@@ -475,9 +516,11 @@ public class RacerProperties {
      * {@code @RacerListener} and {@code @RacerStreamListener} handler invocations.
      * Mapped under {@code racer.thread-pool.*}.
      *
-     * <p>When not customised, defaults mirror the limits of Reactor's built-in
+     * <p>
+     * When not customised, defaults mirror the limits of Reactor's built-in
      * {@code boundedElastic()} scheduler: core={@code 2×CPU}, max={@code 10×CPU},
-     * keep-alive=60 s. The dedicated pool prevents listener workloads from competing
+     * keep-alive=60 s. The dedicated pool prevents listener workloads from
+     * competing
      * with other {@code boundedElastic()} consumers in the application.
      *
      * <pre>
@@ -502,7 +545,8 @@ public class RacerProperties {
 
         /**
          * Maximum number of threads the pool will ever create.
-         * This is also the upper ceiling for {@link com.cheetah.racer.annotation.ConcurrencyMode#AUTO}
+         * This is also the upper ceiling for
+         * {@link com.cheetah.racer.annotation.ConcurrencyMode#AUTO}
          * tuning. Defaults to {@code 10 × availableProcessors()}.
          */
         private int maxSize = 10 * CPU_COUNT;
@@ -548,7 +592,8 @@ public class RacerProperties {
 
         /**
          * How long (in seconds) a processed message ID is remembered.
-         * Messages with the same ID that arrive within this window are silently dropped.
+         * Messages with the same ID that arrive within this window are silently
+         * dropped.
          * Defaults to {@code 300} (5 minutes).
          */
         private int ttlSeconds = 300;
@@ -592,7 +637,8 @@ public class RacerProperties {
         private int slidingWindowSize = 10;
 
         /**
-         * How long (in seconds) the circuit stays OPEN before transitioning to HALF_OPEN.
+         * How long (in seconds) the circuit stays OPEN before transitioning to
+         * HALF_OPEN.
          * Defaults to {@code 30}.
          */
         private int waitDurationInOpenStateSeconds = 30;
@@ -605,12 +651,17 @@ public class RacerProperties {
         private int permittedCallsInHalfOpenState = 3;
 
         /**
-         * Per-listener overrides. Each key is a listener ID (from {@code @RacerListener(id="…")}
+         * Per-listener overrides. Each key is a listener ID (from
+         * {@code @RacerListener(id="…")}
          * or the auto-generated {@code "<beanName>.<methodName>"}).
          *
-         * <p>Any property not set in the override falls back to the corresponding global default.
+         * <p>
+         * Any property not set in the override falls back to the corresponding global
+         * default.
          *
-         * <p>Example:
+         * <p>
+         * Example:
+         * 
          * <pre>
          * racer.circuit-breaker.listeners.order-listener.failure-rate-threshold=10
          * racer.circuit-breaker.listeners.order-listener.sliding-window-size=20
@@ -628,25 +679,32 @@ public class RacerProperties {
 
             /**
              * Percentage of failures (1–100) that triggers OPEN state for this listener.
-             * Falls back to {@code racer.circuit-breaker.failure-rate-threshold} when {@code null}.
+             * Falls back to {@code racer.circuit-breaker.failure-rate-threshold} when
+             * {@code null}.
              */
             private Float failureRateThreshold;
 
             /**
              * Count-based sliding window size for this listener.
-             * Falls back to {@code racer.circuit-breaker.sliding-window-size} when {@code null}.
+             * Falls back to {@code racer.circuit-breaker.sliding-window-size} when
+             * {@code null}.
              */
             private Integer slidingWindowSize;
 
             /**
-             * Seconds the circuit stays OPEN for this listener before transitioning to HALF_OPEN.
-             * Falls back to {@code racer.circuit-breaker.wait-duration-in-open-state-seconds} when {@code null}.
+             * Seconds the circuit stays OPEN for this listener before transitioning to
+             * HALF_OPEN.
+             * Falls back to
+             * {@code racer.circuit-breaker.wait-duration-in-open-state-seconds} when
+             * {@code null}.
              */
             private Integer waitDurationInOpenStateSeconds;
 
             /**
              * Number of probe calls allowed in HALF_OPEN for this listener.
-             * Falls back to {@code racer.circuit-breaker.permitted-calls-in-half-open-state} when {@code null}.
+             * Falls back to
+             * {@code racer.circuit-breaker.permitted-calls-in-half-open-state} when
+             * {@code null}.
              */
             private Integer permittedCallsInHalfOpenState;
         }
@@ -676,13 +734,15 @@ public class RacerProperties {
         private double queueThreshold = 0.80;
 
         /**
-         * How often (milliseconds) the back-pressure monitor checks the queue fill ratio.
+         * How often (milliseconds) the back-pressure monitor checks the queue fill
+         * ratio.
          * Defaults to {@code 1000} ms.
          */
         private long checkIntervalMs = 1_000;
 
         /**
-         * Poll interval (milliseconds) applied to all {@code @RacerStreamListener} loops
+         * Poll interval (milliseconds) applied to all {@code @RacerStreamListener}
+         * loops
          * while back-pressure is active.
          * Defaults to {@code 2000} ms.
          */
@@ -703,7 +763,8 @@ public class RacerProperties {
 
         /**
          * When {@code false} (default) lag metrics are not scraped.
-         * Requires {@code racer.consumer-lag.enabled=true} AND Micrometer on the classpath.
+         * Requires {@code racer.consumer-lag.enabled=true} AND Micrometer on the
+         * classpath.
          */
         private boolean enabled = false;
 
@@ -721,7 +782,8 @@ public class RacerProperties {
 
         /**
          * Lag value above which the health indicator flips to {@code OUT_OF_SERVICE}.
-         * Defaults to {@code 10_000}.  Set to {@code 0} to disable the health-status flip.
+         * Defaults to {@code 10_000}. Set to {@code 0} to disable the health-status
+         * flip.
          */
         private long lagDownThreshold = 10_000;
     }
@@ -730,7 +792,7 @@ public class RacerProperties {
     private ConsumerLagProperties consumerLag = new ConsumerLagProperties();
 
     // ── 4.1 Cluster-Aware Publishing ─────────────────────────────────────────
-    //    Extend ShardingProperties below with consistent-hash options.
+    // Extend ShardingProperties below with consistent-hash options.
 
     // ── 4.2 Distributed Tracing ───────────────────────────────────────────────
 
@@ -799,7 +861,7 @@ public class RacerProperties {
         private String keyPrefix = "racer:ratelimit:";
 
         /**
-         * Per-channel overrides.  Key is the channel alias (or channel name
+         * Per-channel overrides. Key is the channel alias (or channel name
          * when no alias is configured).
          */
         private java.util.Map<String, ChannelRateLimitProperties> channels = new java.util.LinkedHashMap<>();
@@ -811,7 +873,10 @@ public class RacerProperties {
         public static class ChannelRateLimitProperties {
             /** Override capacity (-1 = use {@link RateLimitProperties#defaultCapacity}). */
             private long capacity = -1;
-            /** Override refill rate (-1 = use {@link RateLimitProperties#defaultRefillRate}). */
+            /**
+             * Override refill rate (-1 = use
+             * {@link RateLimitProperties#defaultRefillRate}).
+             */
             private long refillRate = -1;
         }
     }
@@ -826,7 +891,8 @@ public class RacerProperties {
 
         /**
          * Maximum time (in seconds) to wait for in-flight messages to finish processing
-         * before forcing shutdown of {@code @RacerListener} and {@code @RacerStreamListener}
+         * before forcing shutdown of {@code @RacerListener} and
+         * {@code @RacerStreamListener}
          * pipelines. Defaults to {@code 30}.
          */
         private int timeoutSeconds = 30;

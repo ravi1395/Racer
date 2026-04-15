@@ -274,6 +274,24 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
         int batchSize = ann.batchSize();
         Duration pollInterval = Duration.ofMillis(ann.pollIntervalMs());
 
+        // CUX-2: Enforce configurable ceiling on batchSize to prevent thread-pool
+        // exhaustion.
+        int maxBatchSize = racerProperties.getConsumer().getMaxBatchSize();
+        if (batchSize > maxBatchSize) {
+            throw new RacerConfigurationException(
+                    "@RacerStreamListener on " + beanName + "." + method.getName()
+                            + "() has batchSize=" + batchSize + " which exceeds racer.consumer.max-batch-size="
+                            + maxBatchSize + ". High batchSize values can exhaust the Reactor boundedElastic "
+                            + "thread pool. Either reduce batchSize or raise racer.consumer.max-batch-size "
+                            + "explicitly to acknowledge this risk.");
+        }
+        if (batchSize > 10) {
+            log.warn("[RACER-STREAM-LISTENER] @RacerStreamListener on {}.{}() has batchSize={}. "
+                    + "Values above 10 may contend with the shared Reactor thread pool under load. "
+                    + "Consider increasing racer.thread-pool.max-size or using a dedicated scheduler.",
+                    beanName, method.getName(), batchSize);
+        }
+
         method.setAccessible(true);
         registerListenerStats(listenerId);
 
@@ -285,6 +303,15 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
         }
 
         final boolean dedupEnabled = ann.dedup();
+
+        // NFD-1: Fail fast if dedup=true on the listener but the global dedup service
+        // is not enabled — prevents silent dedup no-ops that are hard to diagnose.
+        if (dedupEnabled && !racerProperties.getDedup().isEnabled()) {
+            throw new RacerConfigurationException(
+                    "@RacerStreamListener on " + beanName + "." + method.getName()
+                            + "() has dedup=true but racer.dedup.enabled is false. "
+                            + "Either set racer.dedup.enabled=true or remove dedup=true from the listener.");
+        }
 
         // Store registration so RacerTestHarness can inject messages directly into
         // the processing pipeline without going through Redis Streams.
@@ -390,7 +417,8 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
         Map<Object, Object> fields = record.getValue();
 
         // The data field carries the serialized RacerMessage envelope.
-        // Parsed first so the message is available for DLQ routing in the CB gate below.
+        // Parsed first so the message is available for DLQ routing in the CB gate
+        // below.
         Object raw = fields.get(DEFAULT_DATA_FIELD);
         if (raw == null) {
             log.warn("[RACER-STREAM-LISTENER] Record {} on '{}' missing '{}' field — skipped", recordId, streamKey,
@@ -410,8 +438,8 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
         }
 
         // 0a. Circuit breaker gate — checked after parsing so the rejected message can
-        //     be forwarded to the DLQ, providing a recovery path and failure visibility
-        //     consistent with the Pub/Sub pipeline behaviour.
+        // be forwarded to the DLQ, providing a recovery path and failure visibility
+        // consistent with the Pub/Sub pipeline behaviour.
         RacerCircuitBreaker cb = getCircuitBreakerRegistry() != null
                 ? getCircuitBreakerRegistry().getOrCreate(listenerId)
                 : null;

@@ -451,6 +451,15 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
 
         final boolean dedupEnabled = ann.dedup();
 
+        // NFD-1: Fail fast if dedup=true on the listener but the global dedup service
+        // is not enabled — prevents silent dedup no-ops that are hard to diagnose.
+        if (dedupEnabled && !racerProperties.getDedup().isEnabled()) {
+            throw new RacerConfigurationException(
+                    "@RacerListener on " + beanName + "." + method.getName()
+                            + "() has dedup=true but racer.dedup.enabled is false. "
+                            + "Either set racer.dedup.enabled=true or remove dedup=true from the listener.");
+        }
+
         // Pre-compute per-parameter type flags and a compiled ObjectReader so that
         // the hot dispatch path never pays for repeated type resolution or deserializer
         // lookup (eliminates the per-message JavaType construction overhead at scale).
@@ -618,7 +627,8 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
                         : Math.max(1, ann.concurrency());
 
         final boolean dedupEnabled = ann.dedup();
-        // Use the annotation's pollIntervalMs; fall back to 200 ms if unset or non-positive
+        // Use the annotation's pollIntervalMs; fall back to 200 ms if unset or
+        // non-positive
         final Duration pollInterval = Duration.ofMillis(ann.pollIntervalMs() > 0 ? ann.pollIntervalMs() : 200);
         final String consumerName = listenerId.replace('.', '-') + "-0";
 
