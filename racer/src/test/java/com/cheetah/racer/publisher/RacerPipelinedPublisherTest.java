@@ -15,7 +15,11 @@ import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
+import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -153,5 +157,39 @@ class RacerPipelinedPublisherTest {
         assertThat(item.channelName()).isEqualTo("ch");
         assertThat(item.payload()).isEqualTo("data");
         assertThat(item.sender()).isEqualTo("sender");
+    }
+
+    /**
+     * Verifies that when payloads exceed maxBatchSize, chunks are dispatched concurrently
+     * (flatMap) rather than sequentially (concatMap).
+     *
+     * <p>A CountDownLatch of size 10 is used so that each message's convertAndSend blocks
+     * until all 10 messages are in-flight. With flatMap both chunks start simultaneously,
+     * all 10 messages are active at once, the latch reaches zero, and the test completes.
+     * With the old concatMap, chunk-2 never starts while chunk-1 is blocked, so the latch
+     * never reaches zero and StepVerifier times out.
+     */
+    @Test
+    void publishBatch_exceedingMaxSize_chunksRunInParallel() {
+        // maxBatchSize=5, 10 payloads → 2 chunks; all 10 messages must be in-flight together
+        CountDownLatch allStarted = new CountDownLatch(10);
+
+        when(redisTemplate.convertAndSend(anyString(), anyString())).thenAnswer(inv ->
+            reactor.core.publisher.Mono.fromCallable(() -> {
+                allStarted.countDown();
+                // Block until every message from both chunks has started
+                allStarted.await(3, TimeUnit.SECONDS);
+                return 1L;
+            }).subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic())
+        );
+
+        RacerPipelinedPublisher pub = new RacerPipelinedPublisher(
+            redisTemplate, objectMapper, 5, (RacerMetrics) null, null);
+        List<String> payloads = IntStream.range(0, 10).mapToObj(i -> "p" + i).toList();
+
+        StepVerifier.create(pub.publishBatch("channel", payloads, "svc"))
+            .assertNext(result -> assertThat(result).hasSize(10))
+            .expectComplete()
+            .verify(Duration.ofSeconds(5));
     }
 }

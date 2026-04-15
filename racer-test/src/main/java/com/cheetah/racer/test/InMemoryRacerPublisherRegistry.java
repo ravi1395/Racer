@@ -2,6 +2,7 @@ package com.cheetah.racer.test;
 
 import com.cheetah.racer.config.RacerProperties;
 import com.cheetah.racer.exception.RacerConfigurationException;
+import com.cheetah.racer.metrics.NoOpRacerMetrics;
 import com.cheetah.racer.publisher.RacerChannelPublisher;
 import com.cheetah.racer.publisher.RacerPublisherRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -78,7 +79,7 @@ public class InMemoryRacerPublisherRegistry extends RacerPublisherRegistry {
     public InMemoryRacerPublisherRegistry(RacerProperties properties, ObjectMapper objectMapper) {
         // Pass null for the Redis template — safe because our init() override never calls super.init()
         // and therefore never dereferences the template.
-        super(properties, null, objectMapper, Optional.empty(), Optional.empty(), Optional.empty());
+        super(properties, null, objectMapper, NoOpRacerMetrics.INSTANCE, Optional.empty(), Optional.empty());
         this.racerProperties = properties;
         this.objectMapper    = objectMapper;
     }

@@ -618,7 +618,8 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
                         : Math.max(1, ann.concurrency());
 
         final boolean dedupEnabled = ann.dedup();
-        final Duration pollInterval = Duration.ofMillis(200);
+        // Use the annotation's pollIntervalMs; fall back to 200 ms if unset or non-positive
+        final Duration pollInterval = Duration.ofMillis(ann.pollIntervalMs() > 0 ? ann.pollIntervalMs() : 200);
         final String consumerName = listenerId.replace('.', '-') + "-0";
 
         // Capture volatile dependencies once at registration time

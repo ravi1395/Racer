@@ -23,11 +23,18 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.core.env.Environment;
 import org.springframework.data.redis.connection.ReactiveSubscription;
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
+import org.springframework.data.redis.core.ReactiveStreamOperations;
+import org.springframework.data.redis.connection.stream.Consumer;
+import org.springframework.data.redis.connection.stream.StreamReadOptions;
+import org.springframework.data.redis.connection.stream.StreamOffset;
+import org.springframework.data.redis.connection.stream.ReadOffset;
 import org.springframework.data.redis.listener.ChannelTopic;
 import org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
+import reactor.core.scheduler.Schedulers;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -602,5 +609,99 @@ class RacerListenerRegistrarTest {
     @Test
     void setInterceptors_nonNull_storesInterceptors() {
         registrar.setInterceptors(List.of());
+    }
+
+    // ── Tests: durable listener poll interval ─────────────────────────────────
+
+    /**
+     * A durable listener annotated with {@code pollIntervalMs=50} should re-poll the
+     * stream roughly every 50 ms. Within 300 ms we expect at least 3 XREADGROUP calls
+     * (initial + ≥2 re-polls), proving that the annotation value is used instead of
+     * the old hard-coded 200 ms default.
+     */
+    @Test
+    @SuppressWarnings("unchecked")
+    void durableListener_withPollIntervalMs50_pollsFrequently() throws Exception {
+        ReactiveRedisTemplate<String, String> template = mock(ReactiveRedisTemplate.class);
+        ReactiveStreamOperations<String, Object, Object> streamOps = mock(ReactiveStreamOperations.class);
+        when(template.opsForStream()).thenReturn(streamOps);
+        // ensureGroup: createGroup returns a String Mono (BUSYGROUP errors silently ignored anyway)
+        when(streamOps.createGroup(any(), any(ReadOffset.class), anyString()))
+                .thenReturn(Mono.just("OK"));
+        AtomicInteger readCallCount = new AtomicInteger(0);
+        // pollOnceDurable: read returns an empty batch so each poll completes immediately
+        when(streamOps.read(any(Consumer.class), any(StreamReadOptions.class), any(StreamOffset.class)))
+                .thenAnswer(inv -> { readCallCount.incrementAndGet(); return Flux.empty(); });
+
+        RacerProperties.ChannelProperties cp = new RacerProperties.ChannelProperties();
+        cp.setName("racer:durable:fast");
+        cp.setDurable(true);
+        properties.getChannels().put("fastref", cp);
+
+        RacerListenerRegistrar durableRegistrar = new RacerListenerRegistrar(
+                listenerContainer, objectMapper, properties, Schedulers.boundedElastic(),
+                template, racerMetrics, racerSchemaRegistry, racerRouterService, deadLetterHandler);
+        durableRegistrar.setEnvironment(environment);
+
+        Object durableBean = new Object() {
+            @RacerListener(channelRef = "fastref", pollIntervalMs = 50)
+            public void handle(RacerMessage msg) {}
+        };
+
+        durableRegistrar.postProcessAfterInitialization(durableBean, "fastDurableBean");
+        Thread.sleep(300);
+
+        // 300 ms / 50 ms interval → at least 3 polls (initial + ≥2 re-polls)
+        assertThat(readCallCount.get())
+                .as("Expected at least 3 polls with 50 ms interval within 300 ms")
+                .isGreaterThanOrEqualTo(3);
+
+        durableRegistrar.stop();
+    }
+
+    /**
+     * A durable listener annotated with {@code pollIntervalMs=5000} should not
+     * re-poll within 400 ms. Only the initial poll (at t=0) should have fired,
+     * proving that 5000 ms is honoured rather than the old hard-coded 200 ms
+     * (which would have triggered a second poll at ~200 ms).
+     */
+    @Test
+    @SuppressWarnings("unchecked")
+    void durableListener_withPollIntervalMs5000_doesNotRepollWithin400ms() throws Exception {
+        ReactiveRedisTemplate<String, String> template = mock(ReactiveRedisTemplate.class);
+        ReactiveStreamOperations<String, Object, Object> streamOps = mock(ReactiveStreamOperations.class);
+        when(template.opsForStream()).thenReturn(streamOps);
+        when(streamOps.createGroup(any(), any(ReadOffset.class), anyString()))
+                .thenReturn(Mono.just("OK"));
+        AtomicInteger readCallCount = new AtomicInteger(0);
+        when(streamOps.read(any(Consumer.class), any(StreamReadOptions.class), any(StreamOffset.class)))
+                .thenAnswer(inv -> { readCallCount.incrementAndGet(); return Flux.empty(); });
+
+        RacerProperties.ChannelProperties cp = new RacerProperties.ChannelProperties();
+        cp.setName("racer:durable:slow");
+        cp.setDurable(true);
+        properties.getChannels().put("slowref", cp);
+
+        RacerListenerRegistrar durableRegistrar = new RacerListenerRegistrar(
+                listenerContainer, objectMapper, properties, Schedulers.boundedElastic(),
+                template, racerMetrics, racerSchemaRegistry, racerRouterService, deadLetterHandler);
+        durableRegistrar.setEnvironment(environment);
+
+        Object durableBean = new Object() {
+            @RacerListener(channelRef = "slowref", pollIntervalMs = 5000)
+            public void handle(RacerMessage msg) {}
+        };
+
+        durableRegistrar.postProcessAfterInitialization(durableBean, "slowDurableBean");
+        Thread.sleep(400);
+
+        // With 5000 ms interval, only the initial poll (at t=0) should have fired.
+        // If the old hard-coded 200 ms were still in effect, a second poll would fire
+        // at ~200 ms — so this assertion distinguishes fixed from broken behaviour.
+        assertThat(readCallCount.get())
+                .as("Expected exactly 1 poll with 5000 ms interval within 400 ms")
+                .isEqualTo(1);
+
+        durableRegistrar.stop();
     }
 }

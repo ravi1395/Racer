@@ -93,8 +93,8 @@ public class RacerBackPressureMonitor {
     @PostConstruct
     public void start() {
         RacerProperties.BackPressureProperties bp = racerProperties.getBackpressure();
-        log.info("[RACER-BACKPRESSURE] Monitor started — threshold={:.0f}% checkInterval={}ms",
-                bp.getQueueThreshold() * 100, bp.getCheckIntervalMs());
+        log.info("[RACER-BACKPRESSURE] Monitor started — threshold={}% checkInterval={}ms",
+                String.format("%.0f", bp.getQueueThreshold() * 100), bp.getCheckIntervalMs());
 
         // Register a single persistent gauge for the current active/inactive state
         racerMetrics.registerBackPressureActiveGauge(() -> backPressureActive.get() ? 1 : 0);
@@ -126,8 +126,9 @@ public class RacerBackPressureMonitor {
 
         if (shouldActivate && !wasActive) {
             backPressureActive.set(true);
-            log.warn("[RACER-BACKPRESSURE] ACTIVATED — queue fill {:.1f}% (size={}, capacity={}) >= threshold {:.0f}%",
-                    fillRatio * 100, queueSize, queueCapacity, bp.getQueueThreshold() * 100);
+            log.warn("[RACER-BACKPRESSURE] ACTIVATED — queue fill {}% (size={}, capacity={}) >= threshold {}%",
+                    String.format("%.1f", fillRatio * 100), queueSize, queueCapacity,
+                    String.format("%.0f", bp.getQueueThreshold() * 100));
 
             if (listenerRegistrar != null) {
                 listenerRegistrar.setBackPressureActive(true);
@@ -143,8 +144,9 @@ public class RacerBackPressureMonitor {
             // Immediately release Pub/Sub back-pressure; stream poll recovery is graduated
             // below.
             backPressureActive.set(false);
-            log.info("[RACER-BACKPRESSURE] RELIEVED — queue fill {:.1f}% (size={}, capacity={}) < threshold {:.0f}%",
-                    fillRatio * 100, queueSize, queueCapacity, bp.getQueueThreshold() * 100);
+            log.info("[RACER-BACKPRESSURE] RELIEVED — queue fill {}% (size={}, capacity={}) < threshold {}%",
+                    String.format("%.1f", fillRatio * 100), queueSize, queueCapacity,
+                    String.format("%.0f", bp.getQueueThreshold() * 100));
 
             if (listenerRegistrar != null) {
                 listenerRegistrar.setBackPressureActive(false);

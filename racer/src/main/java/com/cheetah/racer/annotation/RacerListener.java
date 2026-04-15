@@ -140,4 +140,23 @@ public @interface RacerListener {
      * <p>Example: {@code @RacerListener(dedup = true, dedupKey = "orderId")}
      */
     String dedupKey() default "";
+
+    /**
+     * Poll interval in milliseconds for durable (stream-backed) listeners.
+     *
+     * <p>Controls how frequently the consumer issues an XREADGROUP call after each
+     * batch is fully processed. Lower values reduce end-to-end latency at the cost of
+     * more Redis round-trips; higher values reduce Redis load at the cost of increased
+     * message processing latency.
+     *
+     * <p>Only applies when the channel alias is configured with
+     * {@code racer.channels.<alias>.durable=true}. Ignored for standard Pub/Sub
+     * listeners.
+     *
+     * <p>A value of {@code 0} (or negative) falls back to the default of {@code 200} ms.
+     *
+     * <p>Example — low-latency consumer: {@code @RacerListener(channelRef = "orders", pollIntervalMs = 50)}
+     * <p>Example — rate-limited consumer: {@code @RacerListener(channelRef = "reports", pollIntervalMs = 5000)}
+     */
+    long pollIntervalMs() default 200;
 }

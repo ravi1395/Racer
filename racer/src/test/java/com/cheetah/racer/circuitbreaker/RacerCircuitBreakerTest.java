@@ -3,12 +3,14 @@ package com.cheetah.racer.circuitbreaker;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -136,9 +138,45 @@ class RacerCircuitBreakerTest {
         breaker.isCallPermitted(); // probe 2
         assertThat(breaker.getState()).isEqualTo(RacerCircuitBreaker.State.HALF_OPEN);
 
-        // Both succeed → circuit closes
+        // First success alone must NOT close the circuit (HALF_PROBES = 2)
+        breaker.onSuccess();
+        assertThat(breaker.getState()).isEqualTo(RacerCircuitBreaker.State.HALF_OPEN);
+
+        // Second success completes all probes → circuit closes
         breaker.onSuccess();
         assertThat(breaker.getState()).isEqualTo(RacerCircuitBreaker.State.CLOSED);
+    }
+
+    @Test
+    void closesCircuit_onlyAfterAllThreeProbesSucceed_permittedCallsInHalfOpen3()
+            throws InterruptedException {
+        // Use a breaker with permittedCallsInHalfOpen = 3
+        RacerCircuitBreaker cb = new RacerCircuitBreaker("probe3-test", WINDOW_SIZE, THRESHOLD, WAIT_MS, 3);
+
+        // Drive to OPEN
+        cb.onFailure(); cb.onFailure(); cb.onFailure();
+        cb.onSuccess(); cb.onSuccess();
+        assertThat(cb.getState()).isEqualTo(RacerCircuitBreaker.State.OPEN);
+
+        Thread.sleep(WAIT_MS + 10);
+
+        // Allow probes
+        cb.isCallPermitted(); // → HALF_OPEN, probe 1
+        cb.isCallPermitted(); // probe 2
+        cb.isCallPermitted(); // probe 3
+        assertThat(cb.getState()).isEqualTo(RacerCircuitBreaker.State.HALF_OPEN);
+
+        // First success: still HALF_OPEN
+        cb.onSuccess();
+        assertThat(cb.getState()).isEqualTo(RacerCircuitBreaker.State.HALF_OPEN);
+
+        // Second success: still HALF_OPEN
+        cb.onSuccess();
+        assertThat(cb.getState()).isEqualTo(RacerCircuitBreaker.State.HALF_OPEN);
+
+        // Third success: all probes succeeded → CLOSED
+        cb.onSuccess();
+        assertThat(cb.getState()).isEqualTo(RacerCircuitBreaker.State.CLOSED);
     }
 
     // ── HALF_OPEN → OPEN transition ──────────────────────────────────────────
@@ -231,6 +269,48 @@ class RacerCircuitBreakerTest {
         assertThat(errors).as("no exceptions during concurrent recording").isEmpty();
         // State must be a valid enum value — not null or corrupted
         assertThat(stressBreaker.getState()).isNotNull();
+    }
+
+    // ── index overflow regression test ────────────────────────────────────────
+
+    /**
+     * Drives the internal {@code index} counter to just before {@code Integer.MAX_VALUE},
+     * then records several more outcomes so the counter wraps to {@code Integer.MIN_VALUE}.
+     *
+     * <p>Before the fix, {@code Math.abs(Integer.MIN_VALUE % N)} returned a negative
+     * value (because {@code Math.abs(Integer.MIN_VALUE) == Integer.MIN_VALUE} in Java),
+     * causing an {@link ArrayIndexOutOfBoundsException}.  After the fix, {@code Math.floorMod}
+     * always returns a non-negative index, so this test must complete without throwing.
+     */
+    @Test
+    void indexOverflow_pastIntegerMaxValue_doesNotThrow() {
+        // Use a fresh breaker with a small window
+        RacerCircuitBreaker overflowBreaker = new RacerCircuitBreaker(
+                "overflow-test", 5, 60.0f, 50L, 2);
+
+        // Reflectively set the internal index to Integer.MAX_VALUE - 2
+        // so that a few more calls push it past MAX_VALUE and into negative territory.
+        AtomicInteger indexAtomic;
+        try {
+            Field indexField = RacerCircuitBreaker.class.getDeclaredField("index");
+            indexField.setAccessible(true);
+            indexAtomic = (AtomicInteger) indexField.get(overflowBreaker);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("Could not access RacerCircuitBreaker.index via reflection", e);
+        }
+        indexAtomic.set(Integer.MAX_VALUE - 2);
+
+        // Record 10 outcomes spanning the overflow boundary — must not throw.
+        assertThat(org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> {
+            for (int i = 0; i < 10; i++) {
+                if (i % 2 == 0) {
+                    overflowBreaker.onSuccess();
+                } else {
+                    overflowBreaker.onFailure();
+                }
+            }
+            return overflowBreaker.getState();
+        })).isNotNull();
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────

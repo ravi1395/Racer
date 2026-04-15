@@ -92,7 +92,7 @@ public class RacerPipelinedPublisher {
                 List<List<String>> batches = partition(payloads, maxBatchSize);
 
                 return Flux.fromIterable(batches)
-                                .concatMap(batch -> publishChunk(channelName, batch, sender))
+                                .flatMap(batch -> publishChunk(channelName, batch, sender)) // concurrent chunks
                                 .collectList()
                                 .map(listOfLists -> listOfLists.stream()
                                                 .flatMap(List::stream)

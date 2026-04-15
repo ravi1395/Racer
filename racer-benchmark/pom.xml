@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    POM for the racer-benchmark module.
+
+    Provides JMH microbenchmarks for critical Racer paths:
+    - Envelope serialization / deserialization
+    - Circuit breaker state transitions
+    - Deduplication check (Redis SET NX EX)
+    - Rate limiter token-bucket (Redis Lua)
+    - End-to-End publish/receive latency
+
+    Run benchmarks:
+        mvn -pl racer-benchmark clean verify
+        # or a specific benchmark:
+        mvn -pl racer-benchmark jmh:benchmark -Djmh.benchmarks=CircuitBreakerBenchmark
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.ravi1395</groupId>
+        <artifactId>racer-parent</artifactId>
+        <version>1.5.0</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>racer-benchmark</artifactId>
+    <name>racer-benchmark</name>
+    <description>JMH microbenchmarks for critical Racer performance paths</description>
+
+    <!-- Benchmarks are never published to Maven Central -->
+    <properties>
+        <jmh.version>1.37</jmh.version>
+        <!-- Skip the default surefire test run; benchmarks are run via the JMH plugin -->
+        <maven.test.skip>true</maven.test.skip>
+    </properties>
+
+    <dependencies>
+        <!-- Core Racer library under test -->
+        <dependency>
+            <groupId>io.github.ravi1395</groupId>
+            <artifactId>racer</artifactId>
+            <version>${racer.version}</version>
+        </dependency>
+
+        <!-- JMH runtime -->
+        <dependency>
+            <groupId>org.openjdk.jmh</groupId>
+            <artifactId>jmh-core</artifactId>
+            <version>${jmh.version}</version>
+        </dependency>
+        <!-- JMH annotation processor — generates benchmark boilerplate -->
+        <dependency>
+            <groupId>org.openjdk.jmh</groupId>
+            <artifactId>jmh-generator-annprocess</artifactId>
+            <version>${jmh.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Redis client for benchmarks that need a live Redis connection -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Shade plugin creates a fat JAR so JMH can be run standalone:
+                 java -jar target/benchmarks.jar                          -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <!-- Pin to 3.5.2 — 3.6.x broke ManifestResourceTransformer mainClass binding -->
+                <version>3.5.2</version>
+                <executions>
+                    <execution>
+                        <id>shade-benchmarks</id>
+                        <phase>package</phase>
+                        <goals><goal>shade</goal></goals>
+                        <configuration>
+                            <finalName>benchmarks</finalName>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>org.openjdk.jmh.Main</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

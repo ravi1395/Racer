@@ -5,8 +5,10 @@ import com.cheetah.racer.circuitbreaker.RacerCircuitBreaker;
 import com.cheetah.racer.circuitbreaker.RacerCircuitBreakerRegistry;
 import com.cheetah.racer.config.RacerProperties;
 import com.cheetah.racer.dedup.RacerDedupService;
+import com.cheetah.racer.exception.RacerCircuitOpenException;
 import com.cheetah.racer.listener.RacerDeadLetterHandler;
 import com.cheetah.racer.listener.RacerMessageInterceptor;
+import com.cheetah.racer.metrics.RacerMetricsPort;
 import com.cheetah.racer.model.RacerMessage;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -88,6 +90,7 @@ class RacerStreamListenerRegistrarTest {
     @Mock RacerCircuitBreaker circuitBreaker;
     @Mock ObjectProvider<RacerDedupService> dedupServiceProvider;
     @Mock ObjectProvider<RacerCircuitBreakerRegistry> cbRegistryProvider;
+    @Mock RacerMetricsPort racerMetrics;
 
     ObjectMapper objectMapper;
     RacerProperties properties;
@@ -428,5 +431,104 @@ class RacerStreamListenerRegistrarTest {
         Thread.sleep(400);
 
         verify(deadLetterHandler, atLeastOnce()).enqueue(any(RacerMessage.class), any(Throwable.class));
+    }
+
+    // ── Tests: CB open — failed counter incremented ───────────────────────────
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void dispatch_circuitBreakerOpen_incrementsFailedCount() throws Exception {
+        when(cbRegistry.getOrCreate(anyString())).thenReturn(circuitBreaker);
+        when(circuitBreaker.isCallPermitted()).thenReturn(false);
+
+        RacerStreamListenerRegistrar cbRegistrar = new RacerStreamListenerRegistrar(
+                redisTemplate, objectMapper, properties, null, null, null);
+        cbRegistrar.setEnvironment(environment);
+        cbRegistrar.setCircuitBreakerRegistry(cbRegistry);
+
+        SampleStreamBean bean = new SampleStreamBean();
+        RacerMessage msg = RacerMessage.create("stream:orders", "hello", "test");
+        String json = objectMapper.writeValueAsString(msg);
+
+        MapRecord<String, Object, Object> record = StreamRecords.newRecord()
+                .in("stream:orders")
+                .withId(RecordId.of("7-0"))
+                .ofMap(Map.of("data", json));
+
+        when(streamOps.read(any(Consumer.class), any(StreamReadOptions.class), any(StreamOffset.class)))
+                .thenReturn(Flux.just(record), Flux.never());
+        when(streamOps.acknowledge(anyString(), anyString(), any(RecordId.class))).thenReturn(Mono.just(1L));
+
+        cbRegistrar.postProcessAfterInitialization(bean, "sampleStreamBean");
+        Thread.sleep(400);
+
+        assertThat(cbRegistrar.getFailedCount("sampleStreamBean.handleOrder")).isGreaterThanOrEqualTo(1L);
+    }
+
+    // ── Tests: CB open — recordFailed metric emitted ──────────────────────────
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void dispatch_circuitBreakerOpen_recordsFailedMetric() throws Exception {
+        when(cbRegistry.getOrCreate(anyString())).thenReturn(circuitBreaker);
+        when(circuitBreaker.isCallPermitted()).thenReturn(false);
+
+        RacerStreamListenerRegistrar cbRegistrar = new RacerStreamListenerRegistrar(
+                redisTemplate, objectMapper, properties, racerMetrics, null, null);
+        cbRegistrar.setEnvironment(environment);
+        cbRegistrar.setCircuitBreakerRegistry(cbRegistry);
+
+        SampleStreamBean bean = new SampleStreamBean();
+        RacerMessage msg = RacerMessage.create("stream:orders", "hello", "test");
+        String json = objectMapper.writeValueAsString(msg);
+
+        MapRecord<String, Object, Object> record = StreamRecords.newRecord()
+                .in("stream:orders")
+                .withId(RecordId.of("8-0"))
+                .ofMap(Map.of("data", json));
+
+        when(streamOps.read(any(Consumer.class), any(StreamReadOptions.class), any(StreamOffset.class)))
+                .thenReturn(Flux.just(record), Flux.never());
+        when(streamOps.acknowledge(anyString(), anyString(), any(RecordId.class))).thenReturn(Mono.just(1L));
+
+        cbRegistrar.postProcessAfterInitialization(bean, "sampleStreamBean");
+        Thread.sleep(400);
+
+        verify(racerMetrics, atLeastOnce()).recordFailed(eq("stream:orders"), eq("circuit-open"));
+    }
+
+    // ── Tests: CB open — message routed to DLQ with RacerCircuitOpenException ─
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void dispatch_circuitBreakerOpen_routesToDlqWithCircuitOpenException() throws Exception {
+        when(cbRegistry.getOrCreate(anyString())).thenReturn(circuitBreaker);
+        when(circuitBreaker.isCallPermitted()).thenReturn(false);
+        when(deadLetterHandler.enqueue(any(RacerMessage.class), any(Throwable.class))).thenReturn(Mono.empty());
+
+        RacerStreamListenerRegistrar cbRegistrar = new RacerStreamListenerRegistrar(
+                redisTemplate, objectMapper, properties, null, null, deadLetterHandler);
+        cbRegistrar.setEnvironment(environment);
+        cbRegistrar.setCircuitBreakerRegistry(cbRegistry);
+
+        SampleStreamBean bean = new SampleStreamBean();
+        RacerMessage msg = RacerMessage.create("stream:orders", "hello", "test");
+        String json = objectMapper.writeValueAsString(msg);
+
+        MapRecord<String, Object, Object> record = StreamRecords.newRecord()
+                .in("stream:orders")
+                .withId(RecordId.of("9-0"))
+                .ofMap(Map.of("data", json));
+
+        when(streamOps.read(any(Consumer.class), any(StreamReadOptions.class), any(StreamOffset.class)))
+                .thenReturn(Flux.just(record), Flux.never());
+        when(streamOps.acknowledge(anyString(), anyString(), any(RecordId.class))).thenReturn(Mono.just(1L));
+
+        cbRegistrar.postProcessAfterInitialization(bean, "sampleStreamBean");
+        Thread.sleep(400);
+
+        verify(deadLetterHandler, atLeastOnce()).enqueue(
+                any(RacerMessage.class),
+                argThat(t -> t instanceof RacerCircuitOpenException));
     }
 }

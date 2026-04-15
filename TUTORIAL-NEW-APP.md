@@ -258,11 +258,11 @@ racer.default-channel=racer:notify:default
 #     false = Redis Pub/Sub (PUBLISH); messages are lost if no subscriber is online.
 #     true  = Redis Streams (XADD/XREADGROUP); messages survive offline consumers
 #             and are replayed when the consumer reconnects.
-#             ⚠ IMPORTANT: when durable=true, workers MUST use @RacerStreamListener
-#             (not @RacerListener). @RacerListener listens on Pub/Sub and will never
-#             see messages written to a stream. Not switching the annotation silently
-#             drops all messages (the publisher writes to the stream; the listener
-#             subscribes to a Pub/Sub channel that is never written to).
+#             When a channel alias is marked durable, Racer automatically switches
+#             @RacerListener(channelRef = "...") to a stream-backed consumer-group
+#             loop using racer.channels.<alias>.durable-group and stream-key.
+#             Use @RacerStreamListener only when you want to bind directly to an
+#             explicit stream key rather than a named durable channel alias.
 
 # email — fire-and-forget publish (async=true); idempotent delivery (EmailWorker uses dedup=true)
 racer.channels.email.name=racer:notify:email
@@ -759,24 +759,9 @@ public class AuditInterceptor implements RacerMessageInterceptor {
 }
 ```
 
-> **Interceptors apply to `@RacerListener` (Pub/Sub) only.**
-> `RacerMessageInterceptor` beans are discovered and applied by `RacerListenerRegistrar`.
-> `RacerStreamListenerRegistrar` (used by `@RacerStreamListener`) has no interceptor
-> support — interceptors are silently skipped for stream workers.
->
-> **Workaround for stream workers:** apply a Spring `@Aspect` on the listener method:
->
-> ```java
-> @Aspect
-> @Component
-> public class StreamWorkerAspect {
->     @Around("@annotation(com.cheetah.racer.annotation.RacerStreamListener)")
->     public Object aroundStream(ProceedingJoinPoint pjp) throws Throwable {
->         // pre-processing: validate, log, mutate, etc.
->         return pjp.proceed();
->     }
-> }
-> ```
+> **Interceptors apply to both `@RacerListener` and `@RacerStreamListener`.**
+> Ordered `RacerMessageInterceptor` beans are discovered once and applied before
+> each handler invocation in both registrars.
 
 ---
 
@@ -786,7 +771,7 @@ public class AuditInterceptor implements RacerMessageInterceptor {
 
 The simplest form. `@RacerListener` subscribes the method to the `audit` channel at
 startup. Racer handles subscription, JSON deserialization, exception-to-DLQ forwarding,
-and `racer.listener.processed` / `racer.listener.failed` Micrometer counters.
+and `racer.messages.consumed` / `racer.messages.failed` Micrometer counters.
 
 ```java
 // src/main/java/com/example/notify/worker/AuditCollector.java
@@ -977,7 +962,7 @@ public class SmsWorker {
      *   1. RuntimeException is thrown
      *   2. RacerListenerRegistrar catches it
      *   3. DeadLetterQueueService.enqueue() pushes the message to racer:dlq
-     *   4. racer.listener.failed counter is incremented
+    *   4. racer.messages.failed counter is incremented
      *   5. RacerCircuitBreaker records the failure in its sliding window
      *   6. After 3/5 calls fail (60% >= 50% threshold) the circuit OPENS
      *   7. Subsequent calls are rejected without invoking this method
@@ -1265,15 +1250,13 @@ Observe transitions in practice via Exercise 7 in Part 16.
 
 By default `@RacerListener` uses Redis Pub/Sub: messages published while the consumer
 is offline are permanently lost. Switch to durable delivery (Redis Streams + consumer
-groups) by editing `application.properties` **and** updating the consumer annotation.
+groups) by editing `application.properties`.
 
-> **Two things must change together:** the channel property (`durable=true`) controls
-> what the _publisher_ does (XADD instead of PUBLISH). The _consumer_ annotation must
-> also change from `@RacerListener` to `@RacerStreamListener`. These are distinct
-> registrars: `@RacerListener` subscribes to Redis Pub/Sub and will never receive
-> messages written to a stream. Enabling `durable=true` without changing the annotation
-> causes the publisher to write to the stream while the consumer reads from an empty
-> Pub/Sub channel — all messages are silently dropped.
+> **Current behavior:** when a channel alias is marked with
+> `racer.channels.<alias>.durable=true`, `RacerListenerRegistrar` automatically
+> switches `@RacerListener(channelRef = "<alias>")` to a stream-backed
+> `XREADGROUP` loop. For channel-alias-based consumers, no annotation change is
+> required.
 
 ### Step 13.1 — Enable durable email in `application.properties`
 
@@ -1285,20 +1268,13 @@ racer.channels.email.durable-group=email-consumer-group
 racer.channels.email.stream-key=racer:notify:email:stream
 ```
 
-### Step 13.2 — Switch `EmailWorker` to `@RacerStreamListener`
+### Step 13.2 — Keep `EmailWorker` on `@RacerListener`
 
-Change the annotation from `@RacerListener` to `@RacerStreamListener`:
+No code change is required. The existing listener stays as-is:
 
 ```java
 // src/main/java/com/example/notify/worker/EmailWorker.java
-import com.cheetah.racer.annotation.RacerStreamListener;   // <-- new import
-// ...
-
-// Before (Pub/Sub — will not receive any messages when durable=true)
-// @RacerListener(channelRef = "email", id = "email-worker", dedup = true)
-
-// After (Redis Streams — polls via XREADGROUP, auto-ACKs on success)
-@RacerStreamListener(channelRef = "email", id = "email-stream-worker")
+@RacerListener(channelRef = "email", id = "email-worker", dedup = true)
 public void onEmailNotification(RacerMessage message) {
     NotificationResult result;
     try {
@@ -1312,32 +1288,32 @@ public void onEmailNotification(RacerMessage message) {
 }
 ```
 
-> **Note — `dedup = true` is not supported on `@RacerStreamListener`.**
-> Redis Streams consumer groups already guarantee at-least-once delivery within the
-> group; combined with a unique stream entry ID, duplicate suppression can be
-> implemented with a Redis `SET NX EX` guard inside the listener body if needed.
+> **Dedup still works in durable channel mode.**
+> Because the handler remains a `@RacerListener`, the same `dedup = true` guard and
+> dedup TTL continue to apply even after the transport flips from Pub/Sub to Streams.
 
 After restarting:
 
 - `@PublishResult(channelRef="email")` uses `XADD` instead of `PUBLISH`
-- `EmailWorker`'s `@RacerStreamListener` polls via `XREADGROUP` + auto `XACK`
+- `EmailWorker` stays on `@RacerListener(channelRef="email", dedup = true)` but is
+    registered internally as a durable stream consumer backed by `XREADGROUP` + `XACK`
 - Messages published while `EmailWorker` was offline are replayed on reconnect
 
 > **⚠ Do not manually create the consumer group** for a stream managed by racer.
-> `RacerStreamListenerRegistrar` issues `XGROUP CREATE … MKSTREAM` at startup and
-> silently ignores the `BUSYGROUP` error when the group already exists from a previous
-> run. If you pre-create the group with a different offset or a wrong group name,
-> racer's startup `ensureGroup` call will silently succeed (BUSYGROUP is swallowed) and
-> consumers may miss messages or replay from the wrong offset.
+> Racer's registrars issue `XGROUP CREATE … MKSTREAM` at startup and silently ignore
+> the `BUSYGROUP` error when the group already exists from a previous run. If you
+> pre-create the group with a different offset or wrong group name, startup will not
+> fix that mismatch for you and consumers may miss messages or replay from the wrong
+> offset.
 
 | | `durable=false` (default) | `durable=true` |
 |---|---|---|
 | Transport | Redis Pub/Sub (`PUBLISH`) | Redis Streams (`XADD`) |
-| Consumer annotation | `@RacerListener` | **`@RacerStreamListener`** |
+| Consumer annotation | `@RacerListener` | `@RacerListener(channelRef="<durable alias>")` or explicit `@RacerStreamListener(streamKey="...")` |
 | Consumer protocol | `subscribe(ChannelTopic)` | `XREADGROUP` + `XACK` |
 | Messages missed while offline | **Lost** | **Replayed** |
 | Properties to add | — | `durable`, `durable-group`, `stream-key` |
-| Annotation change required | — | **Yes — `@RacerStreamListener`** |
+| Annotation change required | — | **No** for durable channel aliases; **Yes** only when binding directly to an explicit stream key |
 
 ---
 
@@ -1706,8 +1682,8 @@ curl -s http://localhost:8090/actuator/metrics \
 curl -s "http://localhost:8090/actuator/metrics/racer.messages.published" | jq
 
 # Listener processed / failed (tagged by listenerId):
-curl -s "http://localhost:8090/actuator/metrics/racer.listener.processed" | jq
-curl -s "http://localhost:8090/actuator/metrics/racer.listener.failed"    | jq
+curl -s "http://localhost:8090/actuator/metrics/racer.messages.consumed" | jq
+curl -s "http://localhost:8090/actuator/metrics/racer.messages.failed"   | jq
 
 # Deduplication drop count:
 curl -s "http://localhost:8090/actuator/metrics/racer.dedup.duplicates" | jq
@@ -1809,7 +1785,7 @@ NotifyController
 | `racer.dedup.*` | `application.properties` | Idempotency window for EmailWorker |
 | `racer.priority.*` | `application.properties` | Priority sub-channels for push and sms |
 | `racer.channels.email.durable=true` | `application.properties` | Switch email to Redis Streams |
-| Actuator `/metrics` | auto-configured | `racer.messages.published`, `racer.listener.*`, `racer.dedup.*`, `racer.dlq.size` |
+| Actuator `/metrics` | auto-configured | `racer.messages.published`, `racer.messages.consumed`, `racer.messages.failed`, `racer.dedup.*`, `racer.dlq.size` |
 
 ---
 
@@ -1845,11 +1821,11 @@ scope. A few advanced topics have dedicated tutorials:
 | Deduplication not working | `racer.dedup.enabled=false` | Set `racer.dedup.enabled=true` |
 | Circuit breaker never opens | `racer.circuit-breaker.enabled=false` | Set `racer.circuit-breaker.enabled=true` |
 | DLQ always empty after listener exception | `DeadLetterQueueService` not wired | Ensure the `racer` starter is on the classpath |
-| Durable listener misses all messages | `durable=true` set in properties but consumer still uses `@RacerListener` | Switch the consumer annotation to `@RacerStreamListener` — `@RacerListener` reads from Pub/Sub only and will not receive stream messages |
+| Durable listener misses all messages | Durable channel alias points to the wrong `stream-key` or `durable-group` | Verify `racer.channels.<alias>.durable=true`, `durable-group`, and `stream-key`; `@RacerListener(channelRef="<alias>")` already switches to stream-backed consumption automatically |
 | Durable listener misses messages after restart | `durable=true` only on one side | Set `racer.channels.<alias>.durable=true` on both publisher and consumer sides |
 | `ClassCastException` or `JsonMappingException` deserializing `RacerMessage.payload` | `objectMapper.convertValue(message.getPayload(), ...)` called on a `String` | Use `objectMapper.readValue((String) message.getPayload(), YourType.class)` — `payload` is always a JSON String |
 | `NoSuchMethodError` / compile error on `dlqReprocessor.reprocessNext()` | Method does not exist | Use `dlqReprocessor.republishOne()` → `Mono<Long>` (subscriber count) or `dlqReprocessor.republishAll()` → `Mono<Long>` (total republished) |
-| Interceptors not running for `@RacerStreamListener` workers | `RacerMessageInterceptor` beans only apply to `@RacerListener` (Pub/Sub) | Use a Spring `@Aspect` on `@RacerStreamListener` methods for equivalent pre-processing |
-| `async=true` set but messages still lost when listener is offline | `async` controls publish blocking, not transport; Pub/Sub is still used | Set `durable=true` (and switch to `@RacerStreamListener`) to use Redis Streams |
+| Interceptors not running for `@RacerStreamListener` workers | Interceptor beans are missing or not ordered as expected | Ensure your `RacerMessageInterceptor` implementations are Spring beans and use `@Order` when chain order matters |
+| `async=true` set but messages still lost when listener is offline | `async` controls publish blocking, not transport; Pub/Sub is still used | Set `durable=true` so Racer publishes to Redis Streams; for alias-based consumers you can keep `@RacerListener(channelRef="...")` |
 | Request-reply times out immediately | `@RacerResponder` not started or wrong alias | Verify `@RacerResponder(channelRef="requests")` and matching alias on both sides |
 | HTTP 400/500 on `POST /notifications` | Unrecognised `type` value | Use `EMAIL`, `SMS`, `PUSH`, or `BROADCAST` (case-insensitive) |

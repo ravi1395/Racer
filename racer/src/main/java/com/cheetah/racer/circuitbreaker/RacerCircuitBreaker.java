@@ -54,6 +54,8 @@ public class RacerCircuitBreaker {
     private final AtomicLong openedAt = new AtomicLong(0);
     /** Probe-call counter used in HALF_OPEN state. */
     private final AtomicInteger halfOpenProbes = new AtomicInteger(0);
+    /** Successful-probe counter in HALF_OPEN state; circuit closes only when this reaches {@code permittedCallsInHalfOpen}. */
+    private final AtomicInteger halfOpenSuccesses = new AtomicInteger(0);
 
     /** Total number of state transitions (CLOSED→OPEN, OPEN→HALF_OPEN, HALF_OPEN→CLOSED, etc.). */
     private final AtomicLong transitionCount = new AtomicLong(0);
@@ -89,6 +91,7 @@ public class RacerCircuitBreaker {
                 if (elapsed >= waitDurationMs) {
                     if (state.compareAndSet(State.OPEN, State.HALF_OPEN)) {
                         halfOpenProbes.set(0);
+                        halfOpenSuccesses.set(0); // reset success counter for this probe window
                         transitionCount.incrementAndGet();
                         log.info("[CIRCUIT-BREAKER] '{}' → HALF_OPEN (wait elapsed)", name);
                     }
@@ -103,21 +106,25 @@ public class RacerCircuitBreaker {
 
     /**
      * Records a successful call outcome.
-     * In HALF_OPEN state, closes the circuit if all permitted probes have returned successfully.
+     * In HALF_OPEN state, closes the circuit only after all {@code permittedCallsInHalfOpen}
+     * probes have returned successfully; a single success is not enough.
      */
     public void onSuccess() {
-        State s = state.get();
-        if (s == State.HALF_OPEN) {
-            // All probes have gone through and this one succeeded — close the circuit
-            if (state.compareAndSet(State.HALF_OPEN, State.CLOSED)) {
-                // Reset ring buffer so the next window starts clean
-                Arrays.fill(ring, true);
-                failures.set(0);
-                index.set(0);
-                transitionCount.incrementAndGet();
-                log.info("[CIRCUIT-BREAKER] '{}' → CLOSED (probes successful)", name);
+        if (state.get() == State.HALF_OPEN) {
+            int successesSoFar = halfOpenSuccesses.incrementAndGet();
+            if (successesSoFar >= permittedCallsInHalfOpen) {
+                if (state.compareAndSet(State.HALF_OPEN, State.CLOSED)) {
+                    halfOpenSuccesses.set(0);
+                    // Reset ring buffer so the next window starts clean
+                    Arrays.fill(ring, true);
+                    failures.set(0);
+                    index.set(0);
+                    transitionCount.incrementAndGet();
+                    log.info("[CIRCUIT-BREAKER] '{}' → CLOSED (all {} probes succeeded)",
+                            name, permittedCallsInHalfOpen);
+                }
             }
-        } else if (s == State.CLOSED) {
+        } else if (state.get() == State.CLOSED) {
             recordOutcome(true);
         }
     }
@@ -131,6 +138,7 @@ public class RacerCircuitBreaker {
         State s = state.get();
         if (s == State.HALF_OPEN) {
             if (state.compareAndSet(State.HALF_OPEN, State.OPEN)) {
+                halfOpenSuccesses.set(0); // reset probe-success counter for next HALF_OPEN attempt
                 openedAt.set(System.currentTimeMillis());
                 transitionCount.incrementAndGet();
                 log.warn("[CIRCUIT-BREAKER] '{}' → OPEN (probe failed)", name);
@@ -159,8 +167,12 @@ public class RacerCircuitBreaker {
      * @param success {@code true} if the call succeeded, {@code false} if it failed
      */
     private void recordOutcome(boolean success) {
-        // Claim a slot in the ring buffer (wraps around via modulo)
-        int idx = Math.abs(index.getAndIncrement() % slidingWindowSize);
+        // Claim a slot in the ring buffer (wraps around via modulo).
+        // Math.floorMod always returns a non-negative value when the divisor is positive,
+        // so this is safe even when index wraps past Integer.MAX_VALUE to Integer.MIN_VALUE
+        // (Math.abs(Integer.MIN_VALUE) == Integer.MIN_VALUE in Java, which would produce a
+        // negative array index and an ArrayIndexOutOfBoundsException).
+        int idx = Math.floorMod(index.getAndIncrement(), slidingWindowSize);
         boolean oldValue = ring[idx];
         ring[idx] = success;
 

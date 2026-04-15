@@ -27,6 +27,7 @@ import com.cheetah.racer.circuitbreaker.RacerCircuitBreaker;
 import com.cheetah.racer.circuitbreaker.RacerCircuitBreakerRegistry;
 import com.cheetah.racer.config.RacerProperties;
 import com.cheetah.racer.dedup.RacerDedupService;
+import com.cheetah.racer.exception.RacerCircuitOpenException;
 import com.cheetah.racer.exception.RacerConfigurationException;
 import com.cheetah.racer.listener.AbstractRacerRegistrar;
 import com.cheetah.racer.listener.InterceptorContext;
@@ -388,18 +389,8 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
         RecordId recordId = record.getId();
         Map<Object, Object> fields = record.getValue();
 
-        // 0a. Circuit breaker gate
-        RacerCircuitBreaker cb = getCircuitBreakerRegistry() != null
-                ? getCircuitBreakerRegistry().getOrCreate(listenerId)
-                : null;
-        if (cb != null && !cb.isCallPermitted()) {
-            log.debug("[RACER-STREAM-LISTENER] '{}' circuit {} — skipping record {}",
-                    listenerId, cb.getState(), recordId);
-            // ACK to avoid building up pending entries while the circuit is open
-            return RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, recordId);
-        }
-
-        // The data field carries the serialized RacerMessage envelope
+        // The data field carries the serialized RacerMessage envelope.
+        // Parsed first so the message is available for DLQ routing in the CB gate below.
         Object raw = fields.get(DEFAULT_DATA_FIELD);
         if (raw == null) {
             log.warn("[RACER-STREAM-LISTENER] Record {} on '{}' missing '{}' field — skipped", recordId, streamKey,
@@ -416,6 +407,21 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
                     e.getMessage());
             incrementFailed(listenerId);
             return RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, recordId);
+        }
+
+        // 0a. Circuit breaker gate — checked after parsing so the rejected message can
+        //     be forwarded to the DLQ, providing a recovery path and failure visibility
+        //     consistent with the Pub/Sub pipeline behaviour.
+        RacerCircuitBreaker cb = getCircuitBreakerRegistry() != null
+                ? getCircuitBreakerRegistry().getOrCreate(listenerId)
+                : null;
+        if (cb != null && !cb.isCallPermitted()) {
+            log.debug("[RACER-STREAM-LISTENER] '{}' circuit {} — skipping record {}",
+                    listenerId, cb.getState(), recordId);
+            incrementFailed(listenerId);
+            racerMetrics.recordFailed(streamKey, "circuit-open");
+            return enqueueDeadLetter(message, new RacerCircuitOpenException(listenerId))
+                    .then(RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, recordId));
         }
 
         // 0b. Deduplication check (only when annotation flag is set)

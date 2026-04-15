@@ -120,18 +120,33 @@ public class RacerConsistentHashRing {
 
     // ── Hashing ───────────────────────────────────────────────────────────────
 
-    private static int md5Int(String input) {
+    /**
+     * Per-thread cached {@link MessageDigest} for MD5.
+     *
+     * <p>{@code MessageDigest} is not thread-safe, so a {@link ThreadLocal} is used
+     * to avoid allocating a new instance on every call to {@link #md5Int(String)}.
+     * On the hot routing path (every {@code publishToShard()} call) this eliminates
+     * the {@code Security.getProvider()} lookup and factory dispatch that
+     * {@code getInstance()} would otherwise perform.
+     */
+    private static final ThreadLocal<MessageDigest> MD5_DIGEST = ThreadLocal.withInitial(() -> {
         try {
-            MessageDigest md = MessageDigest.getInstance("MD5");
-            byte[] digest = md.digest(input.getBytes(StandardCharsets.UTF_8));
-            // Take first 4 bytes as a signed int — gives uniform 32-bit distribution
-            return ((digest[0] & 0xFF) << 24)
-                    | ((digest[1] & 0xFF) << 16)
-                    | ((digest[2] & 0xFF) << 8)
-                    | (digest[3] & 0xFF);
+            return MessageDigest.getInstance("MD5");
         } catch (NoSuchAlgorithmException e) {
             // MD5 is mandated by the JVM spec, this cannot happen
             throw new IllegalStateException("MD5 not available", e);
         }
+    });
+
+    private static int md5Int(String input) {
+        MessageDigest md = MD5_DIGEST.get();
+        // reset() clears any leftover state from a prior call on this thread
+        md.reset();
+        byte[] digest = md.digest(input.getBytes(StandardCharsets.UTF_8));
+        // Take first 4 bytes as a signed int — gives uniform 32-bit distribution
+        return ((digest[0] & 0xFF) << 24)
+                | ((digest[1] & 0xFF) << 16)
+                | ((digest[2] & 0xFF) << 8)
+                | (digest[3] & 0xFF);
     }
 }
