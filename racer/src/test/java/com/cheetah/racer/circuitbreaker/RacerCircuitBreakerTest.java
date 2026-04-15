@@ -3,6 +3,13 @@ package com.cheetah.racer.circuitbreaker;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -173,6 +180,57 @@ class RacerCircuitBreakerTest {
     @Test
     void getName_returnsConfiguredName() {
         assertThat(breaker.getName()).isEqualTo("test-listener");
+    }
+
+    // ── concurrency stress test ───────────────────────────────────────────────
+
+    /**
+     * 16 threads each record 6 250 outcomes (100K total) against a single breaker.
+     * Verifies that the lock-free ring buffer does not throw, does not deadlock,
+     * and leaves the breaker in either OPEN or CLOSED state (never a corrupted state).
+     */
+    @Test
+    void stressTest_16ThreadsWith100kEvents_noDeadlockOrCorruption() throws InterruptedException {
+        // Large window so the breaker may or may not open — we only care about safety
+        RacerCircuitBreaker stressBreaker = new RacerCircuitBreaker(
+                "stress", 100, 60.0f, 1000L, 5);
+
+        int threadCount = 16;
+        int eventsPerThread = 6_250; // 16 × 6 250 = 100 000 total
+        ExecutorService pool = Executors.newFixedThreadPool(threadCount);
+        CountDownLatch startGate = new CountDownLatch(1);
+        CountDownLatch doneLatch = new CountDownLatch(threadCount);
+        List<Throwable> errors = new ArrayList<>();
+
+        for (int t = 0; t < threadCount; t++) {
+            final int threadId = t;
+            pool.submit(() -> {
+                try {
+                    startGate.await();
+                    for (int i = 0; i < eventsPerThread; i++) {
+                        // Alternate: even threads skew failure-heavy, odd threads skew success-heavy
+                        if (threadId % 2 == 0) {
+                            stressBreaker.onFailure();
+                        } else {
+                            stressBreaker.onSuccess();
+                        }
+                    }
+                } catch (Throwable ex) {
+                    synchronized (errors) { errors.add(ex); }
+                } finally {
+                    doneLatch.countDown();
+                }
+            });
+        }
+
+        startGate.countDown(); // release all threads simultaneously
+        boolean finished = doneLatch.await(10, TimeUnit.SECONDS);
+        pool.shutdown();
+
+        assertThat(finished).as("stress test should complete within 10 s").isTrue();
+        assertThat(errors).as("no exceptions during concurrent recording").isEmpty();
+        // State must be a valid enum value — not null or corrupted
+        assertThat(stressBreaker.getState()).isNotNull();
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────

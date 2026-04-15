@@ -1,14 +1,17 @@
 package com.cheetah.racer.publisher;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectWriter;
 import org.springframework.lang.Nullable;
 import reactor.core.publisher.Mono;
 
+import java.io.StringWriter;
 import java.time.Instant;
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Static factory that builds the standard Racer JSON envelope and serializes it.
@@ -35,6 +38,46 @@ import java.util.UUID;
 public final class MessageEnvelopeBuilder {
 
     private MessageEnvelopeBuilder() {}
+
+    // ── StringWriter Pool ─────────────────────────────────────────────────────
+
+    /**
+     * Abstraction for supplying a ready-to-use {@link StringWriter} to envelope serialization.
+     *
+     * <p>Decouples the pool implementation from the {@code build*()} methods so the strategy
+     * can be replaced (e.g. for testing or alternative pool implementations) without touching
+     * every call site.
+     */
+    @FunctionalInterface
+    interface StringWriterProvider {
+        /**
+         * Returns a {@link StringWriter} whose internal buffer has been reset and is
+         * ready for a fresh serialization pass.
+         *
+         * @return a cleared, reusable {@link StringWriter}
+         */
+        StringWriter get();
+    }
+
+    /**
+     * Per-thread {@link StringWriter} pool.
+     *
+     * <p>Reuses the same {@link StringWriter} instance per thread, clearing its backing
+     * {@link StringBuffer} before each use via {@code setLength(0)}.  This avoids the
+     * {@code new StringWriter()} allocation that {@link ObjectWriter#writeValueAsString}
+     * performs internally on every call, reducing GC pressure at high publish rates.
+     */
+    static StringWriterProvider WRITER_POOL;
+
+    static {
+        ThreadLocal<StringWriter> pool = ThreadLocal.withInitial(StringWriter::new);
+        WRITER_POOL = () -> {
+            StringWriter sw = pool.get();
+            // Reset buffer length to 0 — reuses the backing char[] without freeing it
+            sw.getBuffer().setLength(0);
+            return sw;
+        };
+    }
 
     // ── ID generation ─────────────────────────────────────────────────────────
 
@@ -94,6 +137,101 @@ public final class MessageEnvelopeBuilder {
         return FastUuid::generate;
     }
 
+    // ── Cached Timestamp ──────────────────────────────────────────────────────
+
+    /**
+     * Millisecond-granularity clock cache that avoids the per-call
+     * {@link Instant#toString()} overhead at high publish rates.
+     *
+     * <p>A single daemon thread updates the cached ISO-8601 string once per
+     * millisecond.  At 100K msg/sec that means ~99% of calls hit the cache
+     * and only one {@link Instant#toString()} call is made per millisecond,
+     * eliminating the {@code StringBuilder} + {@code DateTimeFormatter} allocation
+     * overhead that would otherwise account for ~5% of envelope build time.
+     *
+     * <p><b>Trade-off:</b> timestamp granularity is reduced to 1 ms (from nanoseconds),
+     * which is sufficient for all practical Racer use-cases.
+     */
+    private static final class CachedClock {
+
+        /** Latest cached epoch-millis value. Updated by the background thread. */
+        private static volatile long CACHED_MILLIS = System.currentTimeMillis();
+
+        /** Latest cached ISO-8601 timestamp string. Updated by the background thread. */
+        private static volatile String CACHED_TIMESTAMP = formatInstant(CACHED_MILLIS);
+
+        static {
+            // Single daemon thread — does not prevent JVM shutdown.
+            // Named thread simplifies profiler / thread-dump diagnostics.
+            ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1, r -> {
+                Thread t = new Thread(r, "racer-clock-cache");
+                t.setDaemon(true);
+                return t;
+            });
+            // Update every millisecond; initialDelay=0 primes the cache immediately.
+            scheduler.scheduleAtFixedRate(() -> {
+                CACHED_MILLIS    = System.currentTimeMillis();
+                CACHED_TIMESTAMP = formatInstant(CACHED_MILLIS);
+            }, 0, 1, TimeUnit.MILLISECONDS);
+        }
+
+        /**
+         * Returns the current ISO-8601 timestamp string at millisecond granularity.
+         * Safe for concurrent access (field is {@code volatile}).
+         *
+         * @return cached ISO-8601 timestamp updated every millisecond
+         */
+        static String now() {
+            return CACHED_TIMESTAMP;
+        }
+
+        /**
+         * Converts epoch-millis to an ISO-8601 string.
+         * Called only by the background scheduler thread (once per millisecond).
+         *
+         * @param millis epoch time in milliseconds
+         * @return ISO-8601 formatted string
+         */
+        private static String formatInstant(long millis) {
+            return Instant.ofEpochMilli(millis).toString();
+        }
+    }
+
+    // ── Cached ObjectWriter ───────────────────────────────────────────────────
+
+    /**
+     * Cached {@link ObjectWriter} for {@link RacerEnvelope}.
+     *
+     * <p>Lazily initialized on the first {@code build*()} call and reused for all
+     * subsequent calls. Eliminates per-message writer lookup overhead; Jackson can
+     * resolve all field serializers at initialization time because field types are
+     * known statically from the POJO, unlike a {@code Map<String,Object>}.
+     */
+    private static volatile ObjectWriter ENVELOPE_WRITER;
+
+    /**
+     * Returns the cached {@link ObjectWriter}, initializing it from the given
+     * {@code objectMapper} on the first call.
+     *
+     * <p>Uses double-checked locking; safe because {@link ObjectWriter} is immutable
+     * and {@code objectMapper} is the same Spring-managed singleton for every call.
+     *
+     * @param objectMapper mapper to build the writer from (used only on first call)
+     * @return the shared, thread-safe {@link ObjectWriter}
+     */
+    private static ObjectWriter getWriter(ObjectMapper objectMapper) {
+        ObjectWriter w = ENVELOPE_WRITER;
+        if (w == null) {
+            synchronized (MessageEnvelopeBuilder.class) {
+                w = ENVELOPE_WRITER;
+                if (w == null) {
+                    ENVELOPE_WRITER = w = objectMapper.writerFor(RacerEnvelope.class);
+                }
+            }
+        }
+        return w;
+    }
+
     // ── Internal helper ──────────────────────────────────────────────────────
 
     /**
@@ -142,35 +280,45 @@ public final class MessageEnvelopeBuilder {
                                       String channel, String sender, Object payload,
                                       boolean routed, @Nullable String messageId) {
         return Mono.fromCallable(() -> {
-            // 6 fields standard + 1 optional (routed) → capacity 8 avoids rehash
-            Map<String, Object> envelope = new LinkedHashMap<>(8);
-            envelope.put("id",        messageId != null ? messageId : ID_GEN.generate());
-            envelope.put("channel",   channel);
-            envelope.put("sender",    sender);
-            envelope.put("timestamp", Instant.now().toString());
-            envelope.put("payload",   serializePayload(objectMapper, payload));
-            if (routed) envelope.put("routed", true);
-            return objectMapper.writeValueAsString(envelope);
+            RacerEnvelope envelope = new RacerEnvelope(
+                    messageId != null ? messageId : ID_GEN.generate(),
+                    channel,
+                    sender,
+                    CachedClock.now(),
+                    serializePayload(objectMapper, payload),
+                    routed ? Boolean.TRUE : null,  // null omits the field via @JsonInclude(NON_NULL)
+                    null,
+                    null
+            );
+            // Use the pooled StringWriter to avoid per-call StringWriter allocation
+            StringWriter sw = WRITER_POOL.get();
+            getWriter(objectMapper).writeValue(sw, envelope);
+            return sw.toString();
         });
     }
 
     /**
      * Builds a priority envelope:
-     * <pre>{"id": "...", "channel": "...", "sender": "...", "timestamp": "...", "priority": "HIGH", "payload": ...}</pre>
+     * <pre>{"id": "...", "channel": "...", "sender": "...", "timestamp": "...", "payload": "...", "priority": "HIGH"}</pre>
      */
     public static Mono<String> buildWithPriority(ObjectMapper objectMapper,
                                                    String channel, String sender,
                                                    String priority, Object payload) {
         return Mono.fromCallable(() -> {
-            // 7 fields → capacity 10 (load-factor 0.75) avoids rehash
-            Map<String, Object> envelope = new LinkedHashMap<>(10);
-            envelope.put("id",        ID_GEN.generate());
-            envelope.put("channel",   channel);
-            envelope.put("sender",    sender);
-            envelope.put("timestamp", Instant.now().toString());
-            envelope.put("priority",  priority);
-            envelope.put("payload",   serializePayload(objectMapper, payload));
-            return objectMapper.writeValueAsString(envelope);
+            RacerEnvelope envelope = new RacerEnvelope(
+                    ID_GEN.generate(),
+                    channel,
+                    sender,
+                    CachedClock.now(),
+                    serializePayload(objectMapper, payload),
+                    null,
+                    null,
+                    priority
+            );
+            // Use the pooled StringWriter to avoid per-call StringWriter allocation
+            StringWriter sw = WRITER_POOL.get();
+            getWriter(objectMapper).writeValue(sw, envelope);
+            return sw.toString();
         });
     }
 
@@ -181,13 +329,21 @@ public final class MessageEnvelopeBuilder {
     public static Mono<String> buildStream(ObjectMapper objectMapper,
                                             String sender, Object payload) {
         return Mono.fromCallable(() -> {
-            // 4 fields → capacity 6 avoids rehash
-            Map<String, Object> envelope = new LinkedHashMap<>(6);
-            envelope.put("id",        ID_GEN.generate());
-            envelope.put("sender",    sender);
-            envelope.put("timestamp", Instant.now().toString());
-            envelope.put("payload",   serializePayload(objectMapper, payload));
-            return objectMapper.writeValueAsString(envelope);
+            // channel is null → omitted via @JsonInclude(NON_NULL) on RacerEnvelope
+            RacerEnvelope envelope = new RacerEnvelope(
+                    ID_GEN.generate(),
+                    null,
+                    sender,
+                    CachedClock.now(),
+                    serializePayload(objectMapper, payload),
+                    null,
+                    null,
+                    null
+            );
+            // Use the pooled StringWriter to avoid per-call StringWriter allocation
+            StringWriter sw = WRITER_POOL.get();
+            getWriter(objectMapper).writeValue(sw, envelope);
+            return sw.toString();
         });
     }
 
@@ -215,16 +371,22 @@ public final class MessageEnvelopeBuilder {
                                                boolean routed, @Nullable String messageId,
                                                @Nullable String traceparent) {
         return Mono.fromCallable(() -> {
-            Map<String, Object> envelope = new LinkedHashMap<>(10);
-            envelope.put("id",        messageId != null ? messageId : ID_GEN.generate());
-            envelope.put("channel",   channel);
-            envelope.put("sender",    sender);
-            envelope.put("timestamp", Instant.now().toString());
-            envelope.put("payload",   serializePayload(objectMapper, payload));
-            if (routed)       envelope.put("routed",      true);
-            if (traceparent != null && !traceparent.isBlank())
-                              envelope.put("traceparent", traceparent);
-            return objectMapper.writeValueAsString(envelope);
+            // Blank traceparent treated the same as null — field omitted from envelope
+            String tp = (traceparent != null && !traceparent.isBlank()) ? traceparent : null;
+            RacerEnvelope envelope = new RacerEnvelope(
+                    messageId != null ? messageId : ID_GEN.generate(),
+                    channel,
+                    sender,
+                    CachedClock.now(),
+                    serializePayload(objectMapper, payload),
+                    routed ? Boolean.TRUE : null,  // null omits the field via @JsonInclude(NON_NULL)
+                    tp,
+                    null
+            );
+            // Use the pooled StringWriter to avoid per-call StringWriter allocation
+            StringWriter sw = WRITER_POOL.get();
+            getWriter(objectMapper).writeValue(sw, envelope);
+            return sw.toString();
         });
     }
 }

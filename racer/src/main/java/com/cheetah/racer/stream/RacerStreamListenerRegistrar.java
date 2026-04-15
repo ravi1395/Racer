@@ -309,8 +309,18 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
         return Flux.defer(() -> pollOnce(bean, method, streamKey, group, consumer, batchSize, listenerId, dedupEnabled))
                 .repeatWhen(completed -> completed.flatMap(v -> {
                     long overrideMs = backPressurePollOverrideMs.get();
-                    long delayMs = overrideMs > 0 ? overrideMs : pollInterval.toMillis();
-                    return Mono.delay(Duration.ofMillis(delayMs));
+                    if (overrideMs > 0) {
+                        // Back-pressure is active; apply the configured back-off delay
+                        return Mono.delay(Duration.ofMillis(overrideMs));
+                    }
+                    long blockMs = racerProperties.getConsumer().getBlockMillis();
+                    if (blockMs > 0) {
+                        // Blocking reads already handle idle wait on the Redis side;
+                        // repeat immediately to avoid double-waiting
+                        return Mono.just(v);
+                    }
+                    // Non-blocking mode: sleep between polls to avoid busy-spin
+                    return Mono.delay(pollInterval);
                 }))
                 .onErrorContinue((ex, o) ->
                         log.error("[RACER-STREAM-LISTENER] Poll error on '{}': {}", streamKey, ex.getMessage()));
@@ -320,7 +330,12 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
     private Flux<Void> pollOnce(Object bean, Method method,
                                 String streamKey, String group, String consumer,
                                 int batchSize, String listenerId, boolean dedupEnabled) {
-        StreamReadOptions readOptions = StreamReadOptions.empty().count(batchSize);
+        // Build read options: count controls batch size; block() enables Redis-side blocking
+        // so the consumer wakes up instantly when new messages arrive instead of busy-polling.
+        long blockMs = racerProperties.getConsumer().getBlockMillis();
+        StreamReadOptions readOptions = blockMs > 0
+                ? StreamReadOptions.empty().count(batchSize).block(Duration.ofMillis(blockMs))
+                : StreamReadOptions.empty().count(batchSize);
         StreamOffset<String> offset   = StreamOffset.create(streamKey, ReadOffset.lastConsumed());
         Consumer redisConsumer = Consumer.from(group, consumer);
 

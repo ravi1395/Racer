@@ -12,9 +12,14 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import reactor.test.StepVerifier;
 
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -290,5 +295,83 @@ class MessageEnvelopeBuilderTest {
 
         String json = MessageEnvelopeBuilder.build(objectMapper, "ch", "s", "data", false, "explicit-id").block();
         assertThat(parse(json).get("id")).isEqualTo("explicit-id");
+    }
+
+    // ── StringWriter Pool (P2.1) ──────────────────────────────────────────────
+
+    /**
+     * Verifies that sequential calls on the same thread reuse the pooled StringWriter
+     * correctly: the buffer reset between calls prevents stale data from leaking into
+     * subsequent envelopes.
+     */
+    @Test
+    void writerPool_sequentialCallsProduceCorrectOutput() throws Exception {
+        MessageEnvelopeBuilder.setIdGenerator(() -> "seq-id");
+
+        // First call — longer payload to fill the buffer
+        String firstJson = MessageEnvelopeBuilder.build(
+                objectMapper, "channel-a", "svc", "first-payload-value", false, "id-1").block();
+        // Second call — shorter payload; stale chars from the first call must not appear
+        String secondJson = MessageEnvelopeBuilder.build(
+                objectMapper, "channel-b", "svc", "x", false, "id-2").block();
+
+        Map<String, Object> first  = parse(firstJson);
+        Map<String, Object> second = parse(secondJson);
+
+        assertThat(first.get("channel")).isEqualTo("channel-a");
+        assertThat(first.get("payload")).isEqualTo("first-payload-value");
+
+        assertThat(second.get("channel")).isEqualTo("channel-b");
+        assertThat(second.get("payload")).isEqualTo("x");
+        // The second JSON must not contain any residue from the first (e.g. "first-payload-value")
+        assertThat(secondJson).doesNotContain("first-payload-value");
+    }
+
+    /**
+     * Verifies that concurrent calls from multiple threads each produce a correct,
+     * complete envelope — threads must not share or corrupt each other's pooled writers.
+     */
+    @Test
+    void writerPool_concurrentCallsProduceCorrectOutput() throws Exception {
+        int threads = 8;
+        int messagesPerThread = 100;
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        CountDownLatch start = new CountDownLatch(1);
+        List<java.util.concurrent.Future<List<String>>> futures = new ArrayList<>();
+
+        for (int t = 0; t < threads; t++) {
+            final int threadId = t;
+            futures.add(pool.submit(() -> {
+                start.await(); // wait for all threads to be ready
+                List<String> results = new ArrayList<>(messagesPerThread);
+                for (int i = 0; i < messagesPerThread; i++) {
+                    String json = MessageEnvelopeBuilder.build(
+                            objectMapper,
+                            "channel-" + threadId,
+                            "svc-" + threadId,
+                            "payload-" + threadId + "-" + i,
+                            false,
+                            null
+                    ).block();
+                    results.add(json);
+                }
+                return results;
+            }));
+        }
+
+        start.countDown(); // release all threads simultaneously
+        pool.shutdown();
+
+        for (int t = 0; t < threads; t++) {
+            List<String> results = futures.get(t).get();
+            assertThat(results).hasSize(messagesPerThread);
+            for (int i = 0; i < messagesPerThread; i++) {
+                Map<String, Object> env = parse(results.get(i));
+                // Each envelope must contain the correct channel and payload for its thread
+                assertThat(env.get("channel")).isEqualTo("channel-" + t);
+                assertThat(env.get("sender")).isEqualTo("svc-" + t);
+                assertThat(env.get("payload")).isEqualTo("payload-" + t + "-" + i);
+            }
+        }
     }
 }

@@ -164,12 +164,27 @@ public class RacerProperties {
 
         /**
          * Maximum number of stream entries to read per poll (COUNT argument to XREADGROUP).
-         * Defaults to 1.
+         * Increasing this value reduces round-trip overhead and significantly improves
+         * throughput. Defaults to {@code 50} (was {@code 1}).
+         *
+         * <p>Migration: if you are seeing consumer lag, increase this to match your
+         * throughput — e.g. {@code racer.consumer.poll-batch-size=200}.
          */
-        private int pollBatchSize = 1;
+        private int pollBatchSize = 50;
 
         /** Interval in milliseconds between polls when the stream is empty. */
         private long pollIntervalMs = 200;
+
+        /**
+         * How long (milliseconds) the XREADGROUP command blocks waiting for new entries
+         * when the stream is empty. Setting this to a positive value enables Redis blocking
+         * reads, eliminating the busy-poll cycle and achieving instant wakeup when new
+         * messages arrive. Set to {@code 0} to disable blocking reads and revert to the
+         * {@link #pollIntervalMs}-based polling. Defaults to {@code 1000} (1 second).
+         *
+         * <p>Example: {@code racer.consumer.block-millis=2000}
+         */
+        private long blockMillis = 1000;
     }
 
     /** Consumer scaling configuration. */

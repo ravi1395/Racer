@@ -5,6 +5,7 @@ import com.cheetah.racer.metrics.RacerMetrics;
 import com.cheetah.racer.metrics.RacerMetricsPort;
 import com.cheetah.racer.schema.RacerSchemaRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.networknt.schema.JsonSchema;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.lang.Nullable;
@@ -131,10 +132,22 @@ public class RacerPipelinedPublisher {
     // -------------------------------------------------------------------------
 
     private Mono<List<Long>> publishChunk(String channelName, List<String> payloads, String sender) {
+        // Resolve schema once per batch — getSchema() is called exactly once regardless of batch size.
+        // Mono.cache() memoizes the result so all N payloads share the same schema lookup.
+        // When no schema is registered, schemaMono completes empty and validation is skipped for
+        // all payloads without N individual ConcurrentHashMap + mode checks.
+        final Mono<JsonSchema> schemaMono = schemaRegistry != null
+                ? Mono.fromCallable(() -> schemaRegistry.getSchema(channelName)).cache()
+                : Mono.empty();
+
         List<Mono<Long>> ops = payloads.stream()
                 .map(payload -> {
+                    // schemaMono emits the schema if registered, empty otherwise.
+                    // flatMap is invoked only when schema is present, so the per-payload
+                    // validateForPublishReactive call runs only for registered channels.
                     Mono<Void> validate = schemaRegistry != null
-                            ? schemaRegistry.validateForPublishReactive(channelName, payload)
+                            ? schemaMono.flatMap(schema ->
+                                    schemaRegistry.validateForPublishReactive(channelName, payload))
                             : Mono.empty();
                     return validate
                             .then(MessageEnvelopeBuilder.build(objectMapper, channelName, sender, payload))

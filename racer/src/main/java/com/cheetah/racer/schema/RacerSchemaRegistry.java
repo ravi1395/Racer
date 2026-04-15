@@ -182,6 +182,23 @@ public class RacerSchemaRegistry {
     }
 
     /**
+     * Returns the compiled {@link JsonSchema} for the given channel name or alias,
+     * or {@code null} if no schema is registered for that channel.
+     *
+     * <p>Intended for callers that need to cache the schema object once per batch
+     * (e.g. {@link com.cheetah.racer.publisher.RacerPipelinedPublisher}) and then
+     * validate each payload against the same schema instance, avoiding repeated
+     * {@link java.util.concurrent.ConcurrentHashMap} lookups.
+     *
+     * @param channelName channel name or alias
+     * @return the compiled schema, or {@code null}
+     */
+    @org.springframework.lang.Nullable
+    public JsonSchema getSchema(String channelName) {
+        return schemaMap.get(channelName);
+    }
+
+    /**
      * Returns a snapshot of all registered alias/key → definition mappings.
      * Used by the schema REST API.
      */
