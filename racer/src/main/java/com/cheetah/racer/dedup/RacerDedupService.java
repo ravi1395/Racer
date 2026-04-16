@@ -43,6 +43,10 @@ public class RacerDedupService {
     private final ReactiveRedisTemplate<String, String> redisTemplate;
     private final RacerProperties racerProperties;
     private final RacerMetricsPort racerMetrics;
+    /**
+     * Pre-computed TTL duration — config property is immutable at runtime (#23).
+     */
+    private final Duration dedupTtl;
 
     /** Backward-compatible constructor (no metrics). */
     public RacerDedupService(
@@ -58,6 +62,7 @@ public class RacerDedupService {
         this.redisTemplate = redisTemplate;
         this.racerProperties = racerProperties;
         this.racerMetrics = racerMetrics != null ? racerMetrics : NoOpRacerMetrics.INSTANCE;
+        this.dedupTtl = Duration.ofSeconds(racerProperties.getDedup().getTtlSeconds());
     }
 
     /**
@@ -97,10 +102,9 @@ public class RacerDedupService {
 
         RacerProperties.DedupProperties dedup = racerProperties.getDedup();
         String key = dedup.getKeyPrefix() + messageId;
-        Duration ttl = Duration.ofSeconds(dedup.getTtlSeconds());
 
         return redisTemplate.opsForValue()
-                .setIfAbsent(key, "1", ttl)
+                .setIfAbsent(key, "1", dedupTtl)
                 .defaultIfEmpty(false)
                 .doOnNext(isNew -> {
                     if (!isNew && listenerId != null) {

@@ -15,6 +15,7 @@ import org.mockito.quality.Strictness;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.RecordId;
 import org.springframework.data.redis.connection.stream.StreamOffset;
+import org.springframework.data.redis.connection.stream.StreamReadOptions;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
 import reactor.core.publisher.Flux;
@@ -69,14 +70,16 @@ class RacerClientFactoryBeanCleanupTest {
                 .thenReturn(Mono.just(RecordId.of("0-1")));
 
         // Build a valid RacerReply JSON record for the poll to find immediately.
-        // Cast to StreamOffset<String> to disambiguate the overloaded read() method.
+        // Must stub the two-argument overload read(StreamReadOptions, StreamOffset) because
+        // pollForStreamReply uses XREAD BLOCK via StreamReadOptions — the single-argument
+        // overload stub would not match and would leave the Mono permanently pending.
         RacerReply validReply = RacerReply.success("corr-1", "\"done\"", "responder");
         String replyJson = objectMapper.writeValueAsString(validReply);
 
         MapRecord<String, Object, Object> mockRecord = mock(MapRecord.class);
         when(mockRecord.getValue()).thenReturn(Map.of("payload", replyJson));
 
-        when(redisTemplate.opsForStream().read((StreamOffset<String>) any()))
+        when(redisTemplate.opsForStream().read(any(StreamReadOptions.class), any(StreamOffset.class)))
                 .thenReturn(Flux.just(mockRecord));
 
         // delete() FAILS with a simulated Redis error — this is the behaviour under test

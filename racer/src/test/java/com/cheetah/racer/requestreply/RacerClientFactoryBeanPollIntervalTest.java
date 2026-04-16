@@ -15,6 +15,7 @@ import org.mockito.quality.Strictness;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.RecordId;
 import org.springframework.data.redis.connection.stream.StreamOffset;
+import org.springframework.data.redis.connection.stream.StreamReadOptions;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
 import reactor.core.publisher.Flux;
@@ -129,8 +130,8 @@ class RacerClientFactoryBeanPollIntervalTest {
         racerProperties.getRequestReply().setStreamPollIntervalMs(50);
 
         MapRecord<String, Object, Object> replyRecord = buildReplyRecord("corr-50");
-        // Cast to StreamOffset<String> to resolve the read() overload unambiguously
-        when(redisTemplate.opsForStream().read((StreamOffset<String>) any()))
+        // Stub the two-argument overload that pollForStreamReply calls via XREAD BLOCK
+        when(redisTemplate.opsForStream().read(any(StreamReadOptions.class), any(StreamOffset.class)))
                 .thenReturn(Flux.just(replyRecord));
 
         RacerClientFactoryBean<Object> fb = buildFactoryBean();
@@ -150,7 +151,7 @@ class RacerClientFactoryBeanPollIntervalTest {
     void pollForStreamReply_defaultInterval_completesWithReply() throws Exception {
         // Verify the default 200 ms configuration also works correctly
         MapRecord<String, Object, Object> replyRecord = buildReplyRecord("corr-200");
-        when(redisTemplate.opsForStream().read((StreamOffset<String>) any()))
+        when(redisTemplate.opsForStream().read(any(StreamReadOptions.class), any(StreamOffset.class)))
                 .thenReturn(Flux.just(replyRecord));
 
         RacerClientFactoryBean<Object> fb = buildFactoryBean();
@@ -178,7 +179,7 @@ class RacerClientFactoryBeanPollIntervalTest {
         racerProperties.getRequestReply().setStreamPollIntervalMs(1000);
 
         // No reply available — read() always returns empty
-        when(redisTemplate.opsForStream().read((StreamOffset<String>) any()))
+        when(redisTemplate.opsForStream().read(any(StreamReadOptions.class), any(StreamOffset.class)))
                 .thenReturn(Flux.empty());
 
         RacerClientFactoryBean<Object> fb = buildFactoryBean();
@@ -197,6 +198,6 @@ class RacerClientFactoryBeanPollIntervalTest {
 
         // With interval > timeout, maxAttempts=0 → repeatWhen(.take(0)) → no extra polls.
         // read() should be called exactly once (the initial defer).
-        verify(redisTemplate.opsForStream(), atMost(1)).read((StreamOffset<String>) any());
+        verify(redisTemplate.opsForStream(), atMost(1)).read(any(StreamReadOptions.class), any(StreamOffset.class));
     }
 }

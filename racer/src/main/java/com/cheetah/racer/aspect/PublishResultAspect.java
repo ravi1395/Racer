@@ -1,5 +1,11 @@
 package com.cheetah.racer.aspect;
 
+import org.aspectj.lang.ProceedingJoinPoint;
+import org.aspectj.lang.annotation.Around;
+import org.aspectj.lang.annotation.Aspect;
+import org.aspectj.lang.reflect.MethodSignature;
+import org.springframework.lang.Nullable;
+
 import com.cheetah.racer.annotation.ConcurrencyMode;
 import com.cheetah.racer.annotation.PublishResult;
 import com.cheetah.racer.annotation.PublishResults;
@@ -11,12 +17,8 @@ import com.cheetah.racer.publisher.RacerChannelPublisher;
 import com.cheetah.racer.publisher.RacerPriorityPublisher;
 import com.cheetah.racer.publisher.RacerPublisherRegistry;
 import com.cheetah.racer.publisher.RacerStreamPublisher;
+
 import lombok.extern.slf4j.Slf4j;
-import org.aspectj.lang.ProceedingJoinPoint;
-import org.aspectj.lang.annotation.Around;
-import org.aspectj.lang.annotation.Aspect;
-import org.aspectj.lang.reflect.MethodSignature;
-import org.springframework.lang.Nullable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -26,16 +28,20 @@ import reactor.core.publisher.Mono;
  *
  * <h3>Supported return types</h3>
  * <ul>
- *   <li>{@code Mono<T>} — taps into the reactive pipeline; every emitted item is published
- *       without blocking the caller.</li>
- *   <li>{@code Flux<T>} — same as Mono but for every element in the stream.</li>
- *   <li>Any other type — the returned value is published synchronously or asynchronously
- *       after the method returns, depending on {@link PublishResult#async()}.</li>
+ * <li>{@code Mono<T>} — taps into the reactive pipeline; every emitted item is
+ * published
+ * without blocking the caller.</li>
+ * <li>{@code Flux<T>} — same as Mono but for every element in the stream.</li>
+ * <li>Any other type — the returned value is published synchronously or
+ * asynchronously
+ * after the method returns, depending on {@link PublishResult#async()}.</li>
  * </ul>
  *
  * <h3>Durable publishing</h3>
- * When {@code @PublishResult(durable = true)} the value is written to a Redis Stream
- * via {@link RacerStreamPublisher} instead of Pub/Sub, providing at-least-once delivery
+ * When {@code @PublishResult(durable = true)} the value is written to a Redis
+ * Stream
+ * via {@link RacerStreamPublisher} instead of Pub/Sub, providing at-least-once
+ * delivery
  * to consumer groups.
  */
 @Aspect
@@ -49,36 +55,38 @@ public class PublishResultAspect {
     @Nullable
     private final RacerPriorityPublisher priorityPublisher;
 
-    /** Cache of @RacerPriority lookups per method — avoids reflection on every invocation. */
-    private final java.util.concurrent.ConcurrentHashMap<java.lang.reflect.Method, java.util.Optional<RacerPriority>> priorityCache
-            = new java.util.concurrent.ConcurrentHashMap<>();
+    /**
+     * Cache of @RacerPriority lookups per method — avoids reflection on every
+     * invocation.
+     */
+    private final java.util.concurrent.ConcurrentHashMap<java.lang.reflect.Method, java.util.Optional<RacerPriority>> priorityCache = new java.util.concurrent.ConcurrentHashMap<>();
 
     /** Constructor used by tests and legacy wiring (no channel-config fallback). */
     public PublishResultAspect(RacerPublisherRegistry registry,
-                                RacerStreamPublisher streamPublisher) {
+            RacerStreamPublisher streamPublisher) {
         this(registry, streamPublisher, null, null);
     }
 
     public PublishResultAspect(RacerPublisherRegistry registry,
-                                RacerStreamPublisher streamPublisher,
-                                @Nullable RacerProperties properties) {
+            RacerStreamPublisher streamPublisher,
+            @Nullable RacerProperties properties) {
         this(registry, streamPublisher, properties, null);
     }
 
     public PublishResultAspect(RacerPublisherRegistry registry,
-                                RacerStreamPublisher streamPublisher,
-                                @Nullable RacerProperties properties,
-                                @Nullable RacerPriorityPublisher priorityPublisher) {
-        this.registry          = registry;
-        this.streamPublisher   = streamPublisher;
-        this.properties        = properties;
+            RacerStreamPublisher streamPublisher,
+            @Nullable RacerProperties properties,
+            @Nullable RacerPriorityPublisher priorityPublisher) {
+        this.registry = registry;
+        this.streamPublisher = streamPublisher;
+        this.properties = properties;
         this.priorityPublisher = priorityPublisher;
     }
 
     /** Intercepts a single {@code @PublishResult} annotation. */
     @Around("@annotation(publishResult)")
     public Object intercept(ProceedingJoinPoint pjp, PublishResult publishResult) throws Throwable {
-        return dispatchResult(pjp.proceed(), new PublishResult[]{publishResult}, resolveRacerPriority(pjp));
+        return dispatchResult(pjp.proceed(), new PublishResult[] { publishResult }, resolveRacerPriority(pjp));
     }
 
     /**
@@ -93,14 +101,16 @@ public class PublishResultAspect {
     }
 
     /**
-     * Core fan-out: publishes {@code result} to each channel declared by {@code annotations}.
-     * For reactive return types the side-effects are chained non-destructively so the
+     * Core fan-out: publishes {@code result} to each channel declared by
+     * {@code annotations}.
+     * For reactive return types the side-effects are chained non-destructively so
+     * the
      * original element passes through unchanged to the caller.
      */
     private Object dispatchResult(Object result, PublishResult[] annotations,
-                                   @Nullable RacerPriority racerPriority) {
+            @Nullable RacerPriority racerPriority) {
         if (result instanceof Mono) {
-            //noinspection unchecked
+            // noinspection unchecked
             Mono<?> mono = (Mono<?>) result;
             for (PublishResult ann : annotations) {
                 mono = applyMonoDispatch(mono, ann, effectivePriorityLevel(ann, racerPriority));
@@ -109,7 +119,7 @@ public class PublishResultAspect {
         }
 
         if (result instanceof Flux) {
-            //noinspection unchecked
+            // noinspection unchecked
             Flux<?> flux = (Flux<?>) result;
             for (PublishResult ann : annotations) {
                 flux = applyFluxDispatch(flux, ann, effectivePriorityLevel(ann, racerPriority));
@@ -126,37 +136,44 @@ public class PublishResultAspect {
     }
 
     /**
-     * Determines the effective priority level for a single {@code @PublishResult} annotation.
+     * Determines the effective priority level for a single {@code @PublishResult}
+     * annotation.
      *
      * <ul>
-     *   <li>If the annotation's own {@link PublishResult#priority()} is not {@link PriorityLevel#NONE},
-     *       it takes precedence (per-annotation override).</li>
-     *   <li>Otherwise, the method-level {@link RacerPriority#defaultLevel()} is used
-     *       as fallback (backward-compatible).</li>
-     *   <li>If neither is set, returns {@code null} — standard (non-priority) publish.</li>
+     * <li>If the annotation's own {@link PublishResult#priority()} is not
+     * {@link PriorityLevel#NONE},
+     * it takes precedence (per-annotation override).</li>
+     * <li>Otherwise, the method-level {@link RacerPriority#defaultLevel()} is used
+     * as fallback (backward-compatible).</li>
+     * <li>If neither is set, returns {@code null} — standard (non-priority)
+     * publish.</li>
      * </ul>
      */
     @Nullable
     private PriorityLevel effectivePriorityLevel(PublishResult ann, @Nullable RacerPriority methodPriority) {
-        if (priorityPublisher == null) return null;
-        if (ann.priority() != PriorityLevel.NONE) return ann.priority();
-        if (methodPriority != null)                return methodPriority.defaultLevel();
+        if (priorityPublisher == null)
+            return null;
+        if (ann.priority() != PriorityLevel.NONE)
+            return ann.priority();
+        if (methodPriority != null)
+            return methodPriority.defaultLevel();
         return null;
     }
 
     private @Nullable RacerPriority resolveRacerPriority(ProceedingJoinPoint pjp) {
-        if (priorityPublisher == null) return null;
+        if (priorityPublisher == null)
+            return null;
         java.lang.reflect.Method method = ((MethodSignature) pjp.getSignature()).getMethod();
         return priorityCache.computeIfAbsent(method,
                 m -> java.util.Optional.ofNullable(m.getAnnotation(RacerPriority.class))).orElse(null);
     }
 
     private Mono<?> applyMonoDispatch(Mono<?> mono, PublishResult ann,
-                                       @Nullable PriorityLevel priorityLevel) {
-        String channel   = resolveChannel(ann);
-        String sender    = resolveSender(ann, ann.channelRef());
-        boolean async    = resolveAsync(ann, ann.channelRef());
-        boolean durable  = ann.durable();
+            @Nullable PriorityLevel priorityLevel) {
+        String channel = resolveChannel(ann);
+        String sender = resolveSender(ann, ann.channelRef());
+        boolean async = resolveAsync(ann, ann.channelRef());
+        boolean durable = ann.durable();
         String streamKey = resolveStreamKey(ann, channel);
         return mono
                 .doOnNext(value -> publishValue(value, channel, sender, async, durable, streamKey, priorityLevel))
@@ -165,19 +182,18 @@ public class PublishResultAspect {
     }
 
     private Flux<?> applyFluxDispatch(Flux<?> flux, PublishResult ann,
-                                       @Nullable PriorityLevel priorityLevel) {
-        String channel   = resolveChannel(ann);
-        String sender    = resolveSender(ann, ann.channelRef());
-        boolean async    = resolveAsync(ann, ann.channelRef());
-        boolean durable  = ann.durable();
+            @Nullable PriorityLevel priorityLevel) {
+        String channel = resolveChannel(ann);
+        String sender = resolveSender(ann, ann.channelRef());
+        boolean async = resolveAsync(ann, ann.channelRef());
+        boolean durable = ann.durable();
         String streamKey = resolveStreamKey(ann, channel);
 
         if (ann.mode() == ConcurrencyMode.CONCURRENT) {
             int effectiveConcurrency = Math.max(1, ann.concurrency());
             return flux
-                    .flatMap(value ->
-                            publishValueReactive(value, channel, sender, durable, streamKey, priorityLevel)
-                                    .thenReturn(value),
+                    .flatMap(value -> publishValueReactive(value, channel, sender, durable, streamKey, priorityLevel)
+                            .thenReturn(value),
                             effectiveConcurrency)
                     .doOnError(ex -> log.debug(
                             "[racer] @PublishResult(CONCURRENT,{}) skipped — upstream Flux error: {}",
@@ -191,7 +207,7 @@ public class PublishResultAspect {
     }
 
     private void publishForAnnotation(Object value, PublishResult ann,
-                                       @Nullable PriorityLevel priorityLevel) {
+            @Nullable PriorityLevel priorityLevel) {
         String channel = resolveChannel(ann);
         publishValue(value, channel,
                 resolveSender(ann, ann.channelRef()),
@@ -207,7 +223,8 @@ public class PublishResultAspect {
 
     /**
      * Resolves the sender: annotation value wins if non-empty; otherwise falls back
-     * to {@code racer.channels.<alias>.sender}; ultimate fallback is {@code "racer-publisher"}.
+     * to {@code racer.channels.<alias>.sender}; ultimate fallback is
+     * {@code "racer-publisher"}.
      */
     private String resolveSender(PublishResult annotation, String channelRef) {
         if (!annotation.sender().isBlank()) {
@@ -225,8 +242,10 @@ public class PublishResultAspect {
     }
 
     /**
-     * Resolves the async flag: when {@code channelRef} maps to a configured channel,
-     * that channel's {@code async} setting governs the publish; otherwise falls back
+     * Resolves the async flag: when {@code channelRef} maps to a configured
+     * channel,
+     * that channel's {@code async} setting governs the publish; otherwise falls
+     * back
      * to the annotation attribute.
      */
     private boolean resolveAsync(PublishResult annotation, String channelRef) {
@@ -265,39 +284,48 @@ public class PublishResultAspect {
      * control the actual in-flight concurrency.
      */
     private Mono<Void> publishValueReactive(Object value, String channel, String sender,
-                                             boolean durable, String streamKey,
-                                             @Nullable PriorityLevel priorityLevel) {
+            boolean durable, String streamKey,
+            @Nullable PriorityLevel priorityLevel) {
         if (durable) {
             return streamPublisher.publishToStream(streamKey, value, sender)
-                    .doOnSuccess(id -> log.debug("[racer] @PublishResult(durable,concurrent) → stream '{}' id={}", streamKey, id))
-                    .doOnError(err -> log.error("[racer] @PublishResult(durable,concurrent) failed on '{}': {}", streamKey, err.getMessage()))
+                    .doOnSuccess(id -> log.debug("[racer] @PublishResult(durable,concurrent) → stream '{}' id={}",
+                            streamKey, id))
+                    .doOnError(err -> log.error("[racer] @PublishResult(durable,concurrent) failed on '{}': {}",
+                            streamKey, err.getMessage()))
                     .then();
         }
         if (priorityLevel != null && priorityPublisher != null) {
             PriorityLevel level = resolvePriorityLevel(value, priorityLevel);
             var pp = priorityPublisher;
             return pp.publish(channel, value, sender, level)
-                    .doOnSuccess(count -> log.debug("[racer] @PublishResult+priority(concurrent) → '{}:priority:{}' ({} subscriber(s))", channel, level, count))
-                    .doOnError(err -> log.error("[racer] @PublishResult+priority(concurrent) failed to '{}:priority:{}': {}", channel, level, err.getMessage()))
+                    .doOnSuccess(count -> log.debug(
+                            "[racer] @PublishResult+priority(concurrent) → '{}:priority:{}' ({} subscriber(s))",
+                            channel, level, count))
+                    .doOnError(err -> log.error(
+                            "[racer] @PublishResult+priority(concurrent) failed to '{}:priority:{}': {}", channel,
+                            level, err.getMessage()))
                     .then();
         }
         return publisherForChannel(channel)
                 .publishAsync(value, sender)
-                .doOnSuccess(count -> log.debug("[racer] @PublishResult(concurrent) → '{}' ({} subscriber(s))", channel, count))
-                .doOnError(err -> log.error("[racer] @PublishResult(concurrent) publish failed to '{}': {}", channel, err.getMessage()))
+                .doOnSuccess(count -> log.debug("[racer] @PublishResult(concurrent) → '{}' ({} subscriber(s))", channel,
+                        count))
+                .doOnError(err -> log.error("[racer] @PublishResult(concurrent) publish failed to '{}': {}", channel,
+                        err.getMessage()))
                 .then();
     }
 
     private void publishValue(Object value, String channel, String sender,
-                               boolean async, boolean durable, String streamKey,
-                               @Nullable PriorityLevel priorityLevel) {
+            boolean async, boolean durable, String streamKey,
+            @Nullable PriorityLevel priorityLevel) {
         if (durable) {
             // ── Durable path: write to Redis Stream ────────────────────────
             Mono<?> durablePublish = streamPublisher.publishToStream(streamKey, value, sender);
             if (async) {
                 durablePublish.subscribe(
-                        id  -> log.debug("[racer] @PublishResult(durable) → stream '{}' id={}", streamKey, id),
-                        err -> log.error("[racer] @PublishResult(durable) failed on '{}': {}", streamKey, err.getMessage()));
+                        id -> log.debug("[racer] @PublishResult(durable) → stream '{}' id={}", streamKey, id),
+                        err -> log.error("[racer] @PublishResult(durable) failed on '{}': {}", streamKey,
+                                err.getMessage()));
             } else {
                 try {
                     durablePublish.block(java.time.Duration.ofSeconds(10));
@@ -316,14 +344,18 @@ public class PublishResultAspect {
             Mono<Long> publish = pp.publish(channel, value, sender, level);
             if (async) {
                 publish.subscribe(
-                        count -> log.debug("[racer] @PublishResult+priority → '{}:priority:{}' ({} subscriber(s))", channel, level, count),
-                        err   -> log.error("[racer] @PublishResult+priority publish failed to '{}:priority:{}': {}", channel, level, err.getMessage()));
+                        count -> log.debug("[racer] @PublishResult+priority → '{}:priority:{}' ({} subscriber(s))",
+                                channel, level, count),
+                        err -> log.error("[racer] @PublishResult+priority publish failed to '{}:priority:{}': {}",
+                                channel, level, err.getMessage()));
             } else {
                 try {
                     Long count = publish.block(java.time.Duration.ofSeconds(10));
-                    log.debug("[racer] @PublishResult+priority (sync) → '{}:priority:{}' ({} subscriber(s))", channel, level, count);
+                    log.debug("[racer] @PublishResult+priority (sync) → '{}:priority:{}' ({} subscriber(s))", channel,
+                            level, count);
                 } catch (Exception ex) {
-                    log.error("[racer] @PublishResult+priority (sync) failed to '{}:priority:{}': {}", channel, level, ex.getMessage());
+                    log.error("[racer] @PublishResult+priority (sync) failed to '{}:priority:{}': {}", channel, level,
+                            ex.getMessage());
                 }
             }
             return;
@@ -336,7 +368,7 @@ public class PublishResultAspect {
         if (async) {
             publish.subscribe(
                     count -> log.debug("[racer] @PublishResult → '{}' ({} subscriber(s))", channel, count),
-                    err   -> log.error("[racer] @PublishResult publish failed to '{}': {}", channel, err.getMessage()));
+                    err -> log.error("[racer] @PublishResult publish failed to '{}': {}", channel, err.getMessage()));
         } else {
             try {
                 Long count = publish.block(java.time.Duration.ofSeconds(10));
@@ -348,8 +380,10 @@ public class PublishResultAspect {
     }
 
     /**
-     * Extracts the effective priority level for routing. For {@link RacerMessage} payloads
-     * the message's own {@code priority} field takes precedence; for all other types the
+     * Extracts the effective priority level for routing. For {@link RacerMessage}
+     * payloads
+     * the message's own {@code priority} field takes precedence; for all other
+     * types the
      * supplied default level is used.
      */
     private PriorityLevel resolvePriorityLevel(Object value, PriorityLevel defaultLevel) {
@@ -360,10 +394,7 @@ public class PublishResultAspect {
     }
 
     private RacerChannelPublisher publisherForChannel(String channelName) {
-        return registry.getAll().values().stream()
-                .filter(p -> p.getChannelName().equals(channelName))
-                .findFirst()
-                .orElseGet(() -> registry.getPublisher(null));
+        // O(1) lookup via the reverse index built at startup (#10)
+        return registry.getPublisherByChannelName(channelName);
     }
 }
-

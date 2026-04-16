@@ -1,15 +1,18 @@
 package com.cheetah.racer.publisher;
 
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.redis.connection.stream.RecordId;
-import reactor.core.publisher.Mono;
-
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+
+import org.springframework.data.redis.connection.stream.RecordId;
+
+import lombok.extern.slf4j.Slf4j;
+import reactor.core.publisher.Mono;
 
 /**
  * Shard-aware Redis Streams publisher (R-8 — Consumer Scaling).
  *
- * <p>Routes each message to one of N shard streams based on a shard key.
+ * <p>
+ * Routes each message to one of N shard streams based on a shard key.
  * By default the shard index is derived from the key using a CRC-16-style hash
  * identical to Redis Cluster's hash-slot algorithm, so messages with the same
  * key always land on the same shard — enabling per-key ordering guarantees.
@@ -22,6 +25,7 @@ import java.util.List;
  * in the ring is tried automatically.
  *
  * <h3>Stream naming</h3>
+ * 
  * <pre>
  * baseStreamKey:0   — shard 0
  * baseStreamKey:1   — shard 1
@@ -30,6 +34,7 @@ import java.util.List;
  * </pre>
  *
  * <h3>Configuration</h3>
+ * 
  * <pre>
  * racer.sharding.enabled=true
  * racer.sharding.shard-count=4
@@ -41,6 +46,7 @@ import java.util.List;
  * </pre>
  *
  * <h3>Usage</h3>
+ * 
  * <pre>
  * racerShardedStreamPublisher.publishToShard("racer:orders:stream", payload, sender, orderId);
  * </pre>
@@ -63,18 +69,37 @@ public class RacerShardedStreamPublisher {
     /**
      * Phase 4.1 constructor — supports consistent-hash ring and shard failover.
      *
-     * @param delegate       underlying stream publisher
-     * @param shardCount     total number of physical shards
-     * @param hashRing       optional consistent-hash ring; {@code null} falls back to CRC-16
-     * @param failoverEnabled when {@code true} a publish failure triggers a retry on the
+     * @param delegate        underlying stream publisher
+     * @param shardCount      total number of physical shards
+     * @param hashRing        optional consistent-hash ring; {@code null} falls back
+     *                        to CRC-16
+     * @param failoverEnabled when {@code true} a publish failure triggers a retry
+     *                        on the
      *                        failover shard returned by the hash ring
      */
     public RacerShardedStreamPublisher(RacerStreamPublisher delegate, int shardCount,
-                                        RacerConsistentHashRing hashRing, boolean failoverEnabled) {
-        this.delegate        = delegate;
-        this.shardCount      = shardCount;
-        this.hashRing        = hashRing;
+            RacerConsistentHashRing hashRing, boolean failoverEnabled) {
+        this.delegate = delegate;
+        this.shardCount = shardCount;
+        this.hashRing = hashRing;
         this.failoverEnabled = failoverEnabled && hashRing != null;
+    }
+
+    /**
+     * Cache of pre-built shard key arrays keyed by baseStreamKey.
+     * Each entry maps to a String[shardCount] where index i holds
+     * "baseStreamKey:i".
+     */
+    private final ConcurrentHashMap<String, String[]> shardKeyCache = new ConcurrentHashMap<>();
+
+    private String[] shardKeysFor(String baseStreamKey) {
+        return shardKeyCache.computeIfAbsent(baseStreamKey, base -> {
+            String[] keys = new String[shardCount];
+            for (int i = 0; i < shardCount; i++) {
+                keys[i] = base + ":" + i;
+            }
+            return keys;
+        });
     }
 
     /**
@@ -82,16 +107,18 @@ public class RacerShardedStreamPublisher {
      * The shard is selected by hashing {@code shardKey} modulo {@link #shardCount}
      * (or via the consistent-hash ring when enabled).
      *
-     * @param baseStreamKey the unsharded stream key (e.g. {@code racer:orders:stream})
+     * @param baseStreamKey the unsharded stream key (e.g.
+     *                      {@code racer:orders:stream})
      * @param payload       the object to write
      * @param sender        sender identifier
-     * @param shardKey      value used to determine the target shard (e.g. order ID, user ID)
+     * @param shardKey      value used to determine the target shard (e.g. order ID,
+     *                      user ID)
      * @return Mono of the assigned stream entry {@link RecordId}
      */
     public Mono<RecordId> publishToShard(String baseStreamKey, Object payload,
-                                         String sender, String shardKey) {
+            String sender, String shardKey) {
         int shard = primaryShardFor(shardKey);
-        String shardedKey = baseStreamKey + ":" + shard;
+        String shardedKey = shardKeysFor(baseStreamKey)[shard];
         log.debug("[racer-shard] key='{}' → shard={} stream='{}'", shardKey, shard, shardedKey);
 
         Mono<RecordId> primary = delegate.publishToStream(shardedKey, payload, sender);
@@ -99,8 +126,9 @@ public class RacerShardedStreamPublisher {
         if (failoverEnabled) {
             return primary.onErrorResume(ex -> {
                 int failoverShard = hashRing.getFailoverShardFor(shardKey);
-                String failoverKey = baseStreamKey + ":" + failoverShard;
-                log.warn("[racer-shard] Primary shard {} failed for key='{}', failing over to shard {} (stream='{}'): {}",
+                String failoverKey = shardKeysFor(baseStreamKey)[failoverShard];
+                log.warn(
+                        "[racer-shard] Primary shard {} failed for key='{}', failing over to shard {} (stream='{}'): {}",
                         shard, shardKey, failoverShard, failoverKey, ex.getMessage());
                 return delegate.publishToStream(failoverKey, payload, sender);
             });
@@ -113,11 +141,7 @@ public class RacerShardedStreamPublisher {
      * Useful when initialising consumer groups for each shard.
      */
     public List<String> allShardKeys(String baseStreamKey) {
-        java.util.List<String> keys = new java.util.ArrayList<>(shardCount);
-        for (int i = 0; i < shardCount; i++) {
-            keys.add(baseStreamKey + ":" + i);
-        }
-        return keys;
+        return List.of(shardKeysFor(baseStreamKey));
     }
 
     /**
@@ -147,7 +171,8 @@ public class RacerShardedStreamPublisher {
      * Computes a deterministic shard index using CRC-16/CCITT (the same
      * polynomial used by Redis Cluster hash slots) modulo {@link #shardCount}.
      *
-     * @deprecated Retained for backward-compatibility; prefer {@link #primaryShardFor(String)}.
+     * @deprecated Retained for backward-compatibility; prefer
+     *             {@link #primaryShardFor(String)}.
      */
     @Deprecated(since = "1.3.0")
     int shardFor(String key) {
@@ -164,9 +189,10 @@ public class RacerShardedStreamPublisher {
         for (byte b : bytes) {
             for (int i = 0; i < 8; i++) {
                 boolean mix = ((crc ^ (b << 8)) & 0x8000) != 0;
-                crc  = (crc << 1) & 0xFFFF;
-                b    = (byte) (b << 1);
-                if (mix) crc ^= 0x1021;
+                crc = (crc << 1) & 0xFFFF;
+                b = (byte) (b << 1);
+                if (mix)
+                    crc ^= 0x1021;
             }
         }
         return crc;

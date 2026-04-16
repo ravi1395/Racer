@@ -1,6 +1,7 @@
 package com.cheetah.racer.listener.pipeline;
 
 import java.util.List;
+import java.util.function.BiFunction;
 
 import com.cheetah.racer.listener.InterceptorContext;
 import com.cheetah.racer.listener.RacerMessageInterceptor;
@@ -18,6 +19,10 @@ import reactor.core.publisher.Mono;
  * Each interceptor may mutate the message or signal an error to abort the
  * pipeline.
  * If the list is empty this stage is a no-op pass-through.
+ *
+ * <p>
+ * The interceptor chain is pre-composed once at construction time to avoid
+ * building N {@code MonoFlatMap} operator objects on every message (#7).
  */
 public final class InterceptorStage implements RacerMessageStage {
 
@@ -27,6 +32,12 @@ public final class InterceptorStage implements RacerMessageStage {
     private final List<RacerMessageInterceptor> interceptors;
 
     /**
+     * Pre-composed interceptor chain keyed by (message, interceptorContext).
+     * Built once in the constructor; reused across all messages for this stage.
+     */
+    private final BiFunction<RacerMessage, InterceptorContext, Mono<RacerMessage>> composedChain;
+
+    /**
      * Creates a new interceptor stage.
      *
      * @param interceptors ordered list of interceptors to apply; must not be
@@ -34,6 +45,25 @@ public final class InterceptorStage implements RacerMessageStage {
      */
     public InterceptorStage(List<RacerMessageInterceptor> interceptors) {
         this.interceptors = List.copyOf(interceptors);
+        this.composedChain = buildChain(this.interceptors);
+    }
+
+    /**
+     * Pre-composes the interceptor list into a single reusable BiFunction.
+     */
+    private static BiFunction<RacerMessage, InterceptorContext, Mono<RacerMessage>> buildChain(
+            List<RacerMessageInterceptor> interceptors) {
+        if (interceptors.isEmpty()) {
+            return (msg, ctx) -> Mono.just(msg);
+        }
+        BiFunction<RacerMessage, InterceptorContext, Mono<RacerMessage>> chain = (msg, ctx) -> interceptors.get(0)
+                .intercept(msg, ctx);
+        for (int i = 1; i < interceptors.size(); i++) {
+            final RacerMessageInterceptor next = interceptors.get(i);
+            final BiFunction<RacerMessage, InterceptorContext, Mono<RacerMessage>> prev = chain;
+            chain = (msg, ctx) -> prev.apply(msg, ctx).flatMap(m -> next.intercept(m, ctx));
+        }
+        return chain;
     }
 
     @Override
@@ -41,13 +71,9 @@ public final class InterceptorStage implements RacerMessageStage {
         if (interceptors.isEmpty()) {
             return Mono.just(msg);
         }
-        // Build the chain by folding over interceptors; each flatMap sequentially
-        // chains on the previous
+        // Create a per-execute InterceptorContext; the pre-composed chain reuses
+        // the same lambda structure across all messages for this listener.
         InterceptorContext ictx = new InterceptorContext(ctx.listenerId(), ctx.channel(), ctx.method());
-        Mono<RacerMessage> chain = Mono.just(msg);
-        for (RacerMessageInterceptor interceptor : interceptors) {
-            chain = chain.flatMap(m -> interceptor.intercept(m, ictx));
-        }
-        return chain;
+        return composedChain.apply(msg, ictx);
     }
 }

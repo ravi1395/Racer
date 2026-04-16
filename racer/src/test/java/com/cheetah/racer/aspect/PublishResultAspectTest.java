@@ -85,6 +85,8 @@ class PublishResultAspectTest {
         when(registry.getAll()).thenReturn(Map.of(CHANNEL, publisher));
         when(publisher.getChannelName()).thenReturn(CHANNEL);
         when(publisher.publishAsync(any(), anyString())).thenReturn(Mono.just(1L));
+        // publisherForChannel uses getPublisherByChannelName (O(1) reverse-index lookup)
+        when(registry.getPublisherByChannelName(CHANNEL)).thenReturn(publisher);
     }
 
     // ── Sequential mode (Flux) ────────────────────────────────────────────────
@@ -273,6 +275,7 @@ class PublishResultAspectTest {
         when(publisher2.getChannelName()).thenReturn(channel2);
         when(publisher2.publishAsync(any(), anyString())).thenReturn(Mono.just(1L));
         when(registry.getAll()).thenReturn(Map.of(CHANNEL, publisher, channel2, publisher2));
+        when(registry.getPublisherByChannelName(channel2)).thenReturn(publisher2);
 
         // Two @PublishResult annotations wrapped in @PublishResults
         PublishResult ann1 = annotation; // already stubs CHANNEL
@@ -310,6 +313,7 @@ class PublishResultAspectTest {
         when(publisher2.getChannelName()).thenReturn(channel2);
         when(publisher2.publishAsync(any(), anyString())).thenReturn(Mono.just(1L));
         when(registry.getAll()).thenReturn(Map.of(CHANNEL, publisher, channel2, publisher2));
+        when(registry.getPublisherByChannelName(channel2)).thenReturn(publisher2);
 
         PublishResult ann2 = mock(PublishResult.class);
         when(ann2.channel()).thenReturn(channel2);
@@ -344,6 +348,7 @@ class PublishResultAspectTest {
         when(publisher2.getChannelName()).thenReturn(channel2);
         when(publisher2.publishAsync(any(), anyString())).thenReturn(Mono.just(1L));
         when(registry.getAll()).thenReturn(Map.of(CHANNEL, publisher, channel2, publisher2));
+        when(registry.getPublisherByChannelName(channel2)).thenReturn(publisher2);
 
         PublishResult ann2 = mock(PublishResult.class);
         when(ann2.channel()).thenReturn(channel2);
@@ -450,6 +455,7 @@ class PublishResultAspectTest {
         when(auditPublisher.getChannelName()).thenReturn(auditChannel);
         when(auditPublisher.publishAsync(any(), anyString())).thenReturn(Mono.just(1L));
         when(registry.getAll()).thenReturn(Map.of(CHANNEL, publisher, auditChannel, auditPublisher));
+        when(registry.getPublisherByChannelName(auditChannel)).thenReturn(auditPublisher);
 
         PublishResult ann2 = mock(PublishResult.class);
         when(ann2.channel()).thenReturn(auditChannel);
@@ -714,6 +720,7 @@ class PublishResultAspectTest {
         when(channelRefPublisher.publishAsync(any(), anyString())).thenReturn(Mono.just(1L));
         when(registry.getPublisher("orders")).thenReturn(channelRefPublisher);
         when(registry.getAll()).thenReturn(Map.of("racer:orders", channelRefPublisher));
+        when(registry.getPublisherByChannelName("racer:orders")).thenReturn(channelRefPublisher);
 
         // no direct channel, only channelRef
         when(annotation.channel()).thenReturn("");
@@ -733,6 +740,7 @@ class PublishResultAspectTest {
         when(defaultPublisher.publishAsync(any(), anyString())).thenReturn(Mono.just(1L));
         when(registry.getPublisher(null)).thenReturn(defaultPublisher);
         when(registry.getAll()).thenReturn(Map.of("racer:default", defaultPublisher));
+        when(registry.getPublisherByChannelName("racer:default")).thenReturn(defaultPublisher);
 
         when(annotation.channel()).thenReturn("");
         when(annotation.channelRef()).thenReturn("");

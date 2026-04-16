@@ -7,7 +7,8 @@ import lombok.AllArgsConstructor;
 
 import java.io.Serializable;
 import java.time.Instant;
-import java.util.UUID;
+
+import com.cheetah.racer.publisher.MessageEnvelopeBuilder;
 
 /**
  * Represents a message exchanged via Redis Pub/Sub.
@@ -33,8 +34,10 @@ public class RacerMessage implements Serializable {
     private PriorityLevel priority = PriorityLevel.NORMAL;
 
     /**
-     * Set to {@code true} by the router when a message has been forwarded via a routing rule.
-     * Messages with {@code routed=true} are skipped by the router to prevent infinite cycles.
+     * Set to {@code true} by the router when a message has been forwarded via a
+     * routing rule.
+     * Messages with {@code routed=true} are skipped by the router to prevent
+     * infinite cycles.
      */
     @Builder.Default
     private boolean routed = false;
@@ -57,11 +60,12 @@ public class RacerMessage implements Serializable {
     /**
      * Factory method with explicit priority.
      *
-     * @param priority the desired priority; {@code null} is treated as {@link PriorityLevel#NORMAL}
+     * @param priority the desired priority; {@code null} is treated as
+     *                 {@link PriorityLevel#NORMAL}
      */
     public static RacerMessage create(String channel, String payload, String sender, PriorityLevel priority) {
         return RacerMessage.builder()
-                .id(UUID.randomUUID().toString())
+                .id(MessageEnvelopeBuilder.generateId())
                 .channel(channel)
                 .payload(payload)
                 .sender(sender)

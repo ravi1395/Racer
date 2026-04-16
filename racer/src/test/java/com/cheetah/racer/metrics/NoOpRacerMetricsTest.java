@@ -1,15 +1,14 @@
 package com.cheetah.racer.metrics;
 
-import io.micrometer.core.instrument.Timer;
-import org.junit.jupiter.api.Test;
-
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import org.junit.jupiter.api.Test;
+
+import io.micrometer.core.instrument.Timer;
 
 /**
  * Unit tests for {@link NoOpRacerMetrics}.
@@ -45,15 +44,14 @@ class NoOpRacerMetricsTest {
     }
 
     @Test
-    void startRequestReplyTimer_returnsSample() {
+    void startRequestReplyTimer_returnsNull() {
         Timer.Sample sample = noOp.startRequestReplyTimer();
-        assertThat(sample).isNotNull();
+        assertThat(sample).isNull();
     }
 
     @Test
     void stopRequestReplyTimer_doesNotThrow() {
-        Timer.Sample sample = noOp.startRequestReplyTimer();
-        assertThatCode(() -> noOp.stopRequestReplyTimer(sample, "pubsub")).doesNotThrowAnyException();
+        assertThatCode(() -> noOp.stopRequestReplyTimer(null, "pubsub")).doesNotThrowAnyException();
     }
 
     @Test

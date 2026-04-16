@@ -1,27 +1,63 @@
 package com.cheetah.racer.metrics;
 
-import io.micrometer.core.instrument.*;
-import lombok.extern.slf4j.Slf4j;
-
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
+
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * Micrometer-based operational metrics for the Racer framework.
  *
- * <p>Registered as a Spring bean only when {@code io.micrometer.core.instrument.MeterRegistry}
- * is present on the classpath (i.e. when {@code spring-boot-starter-actuator} is a dependency).
- * Services that optionally use metrics should inject {@code Optional<RacerMetrics>} or
+ * <p>
+ * Registered as a Spring bean only when
+ * {@code io.micrometer.core.instrument.MeterRegistry}
+ * is present on the classpath (i.e. when {@code spring-boot-starter-actuator}
+ * is a dependency).
+ * Services that optionally use metrics should inject
+ * {@code Optional<RacerMetrics>} or
  * declare the field with {@code @Autowired(required = false)}.
  *
  * <h3>Exposed metrics</h3>
  * <table>
- * <tr><th>Metric</th><th>Type</th><th>Tags</th></tr>
- * <tr><td>racer.messages.published</td><td>Counter</td><td>channel, transport</td></tr>
- * <tr><td>racer.messages.consumed</td><td>Counter</td><td>channel, mode</td></tr>
- * <tr><td>racer.messages.failed</td><td>Counter</td><td>channel, exception</td></tr>
- * <tr><td>racer.dlq.size</td><td>Gauge</td><td>-</td></tr>
- * <tr><td>racer.dlq.reprocessed</td><td>Counter</td><td>-</td></tr>
- * <tr><td>racer.request.reply.latency</td><td>Timer</td><td>transport</td></tr>
+ * <tr>
+ * <th>Metric</th>
+ * <th>Type</th>
+ * <th>Tags</th>
+ * </tr>
+ * <tr>
+ * <td>racer.messages.published</td>
+ * <td>Counter</td>
+ * <td>channel, transport</td>
+ * </tr>
+ * <tr>
+ * <td>racer.messages.consumed</td>
+ * <td>Counter</td>
+ * <td>channel, mode</td>
+ * </tr>
+ * <tr>
+ * <td>racer.messages.failed</td>
+ * <td>Counter</td>
+ * <td>channel, exception</td>
+ * </tr>
+ * <tr>
+ * <td>racer.dlq.size</td>
+ * <td>Gauge</td>
+ * <td>-</td>
+ * </tr>
+ * <tr>
+ * <td>racer.dlq.reprocessed</td>
+ * <td>Counter</td>
+ * <td>-</td>
+ * </tr>
+ * <tr>
+ * <td>racer.request.reply.latency</td>
+ * <td>Timer</td>
+ * <td>transport</td>
+ * </tr>
  * </table>
  */
 @Slf4j
@@ -29,8 +65,24 @@ public class RacerMetrics implements RacerMetricsPort {
 
     private final MeterRegistry registry;
 
+    // Counter caches — avoids per-message Builder + registry lookup overhead (#5)
+    private final ConcurrentHashMap<String, Counter> publishCounters = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Counter> consumeCounters = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Counter> failCounters = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Counter> cbTransitionCounters = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Counter> cbRejectionCounters = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Counter> bpEventCounters = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Counter> bpDropCounters = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Counter> dedupCounters = new ConcurrentHashMap<>();
+
+    // Pre-registered counter for tagless DLQ reprocessed metric
+    private final Counter dlqReprocessedCounter;
+
     public RacerMetrics(MeterRegistry registry) {
         this.registry = registry;
+        this.dlqReprocessedCounter = Counter.builder("racer.dlq.reprocessed")
+                .description("Number of DLQ messages that were reprocessed")
+                .register(registry);
         log.info("[racer-metrics] Micrometer metrics enabled — {} meter registry",
                 registry.getClass().getSimpleName());
     }
@@ -46,11 +98,13 @@ public class RacerMetrics implements RacerMetricsPort {
      * @param transport {@code "pubsub"} or {@code "stream"}
      */
     public void recordPublished(String channel, String transport) {
-        Counter.builder("racer.messages.published")
-                .description("Number of messages published by Racer")
-                .tag("channel", channel)
-                .tag("transport", transport)
-                .register(registry)
+        publishCounters.computeIfAbsent(
+                channel + "|" + transport,
+                k -> Counter.builder("racer.messages.published")
+                        .description("Number of messages published by Racer")
+                        .tag("channel", channel)
+                        .tag("transport", transport)
+                        .register(registry))
                 .increment();
     }
 
@@ -60,21 +114,25 @@ public class RacerMetrics implements RacerMetricsPort {
 
     /** Increments {@code racer.messages.consumed}. */
     public void recordConsumed(String channel, String mode) {
-        Counter.builder("racer.messages.consumed")
-                .description("Number of messages successfully consumed")
-                .tag("channel", channel)
-                .tag("mode", mode)
-                .register(registry)
+        consumeCounters.computeIfAbsent(
+                channel + "|" + mode,
+                k -> Counter.builder("racer.messages.consumed")
+                        .description("Number of messages successfully consumed")
+                        .tag("channel", channel)
+                        .tag("mode", mode)
+                        .register(registry))
                 .increment();
     }
 
     /** Increments {@code racer.messages.failed}. */
     public void recordFailed(String channel, String exceptionClass) {
-        Counter.builder("racer.messages.failed")
-                .description("Number of messages that failed processing")
-                .tag("channel", channel)
-                .tag("exception", exceptionClass)
-                .register(registry)
+        failCounters.computeIfAbsent(
+                channel + "|" + exceptionClass,
+                k -> Counter.builder("racer.messages.failed")
+                        .description("Number of messages that failed processing")
+                        .tag("channel", channel)
+                        .tag("exception", exceptionClass)
+                        .register(registry))
                 .increment();
     }
 
@@ -84,14 +142,12 @@ public class RacerMetrics implements RacerMetricsPort {
 
     /** Increments {@code racer.dlq.reprocessed}. */
     public void recordDlqReprocessed() {
-        Counter.builder("racer.dlq.reprocessed")
-                .description("Number of DLQ messages that were reprocessed")
-                .register(registry)
-                .increment();
+        dlqReprocessedCounter.increment();
     }
 
     /**
-     * Registers a gauge that tracks DLQ depth by calling {@code sizeSupplier} on each scrape.
+     * Registers a gauge that tracks DLQ depth by calling {@code sizeSupplier} on
+     * each scrape.
      * Should be called once at startup.
      *
      * @param sizeSupplier supplier that returns the current DLQ size
@@ -108,19 +164,23 @@ public class RacerMetrics implements RacerMetricsPort {
 
     /**
      * Starts a latency timer sample.
-     * Call {@link #stopRequestReplyTimer(Timer.Sample, String)} when the reply arrives.
+     * Call {@link #stopRequestReplyTimer(Timer.Sample, String)} when the reply
+     * arrives.
      */
     public Timer.Sample startRequestReplyTimer() {
         return Timer.start(registry);
     }
 
     /**
-     * Stops the sample and records elapsed time to {@code racer.request.reply.latency}.
+     * Stops the sample and records elapsed time to
+     * {@code racer.request.reply.latency}.
      *
      * @param sample    the sample returned by {@link #startRequestReplyTimer()}
      * @param transport {@code "pubsub"} or {@code "stream"}
      */
     public void stopRequestReplyTimer(Timer.Sample sample, String transport) {
+        if (sample == null)
+            return;
         sample.stop(Timer.builder("racer.request.reply.latency")
                 .description("Round-trip latency for Racer request-reply")
                 .tag("transport", transport)
@@ -135,25 +195,29 @@ public class RacerMetrics implements RacerMetricsPort {
      * Registers gauges that expose key metrics from the Racer listener thread pool.
      * Should be called once at startup after the pool is created.
      *
-     * <p>Exposed metrics:
+     * <p>
+     * Exposed metrics:
      * <ul>
-     *   <li>{@code racer.thread-pool.queue-depth} — current work-queue size</li>
-     *   <li>{@code racer.thread-pool.active-threads} — threads actively executing tasks</li>
-     *   <li>{@code racer.thread-pool.pool-size} — current total thread count in the pool</li>
+     * <li>{@code racer.thread-pool.queue-depth} — current work-queue size</li>
+     * <li>{@code racer.thread-pool.active-threads} — threads actively executing
+     * tasks</li>
+     * <li>{@code racer.thread-pool.pool-size} — current total thread count in the
+     * pool</li>
      * </ul>
      *
-     * @param executor the {@link java.util.concurrent.ThreadPoolExecutor} backing the listener scheduler
+     * @param executor the {@link java.util.concurrent.ThreadPoolExecutor} backing
+     *                 the listener scheduler
      */
     public void registerThreadPoolGauges(java.util.concurrent.ThreadPoolExecutor executor) {
         Gauge.builder("racer.thread-pool.queue-depth", executor, e -> e.getQueue().size())
                 .description("Work-queue depth of the Racer listener thread pool")
                 .register(registry);
         Gauge.builder("racer.thread-pool.active-threads", executor,
-                        java.util.concurrent.ThreadPoolExecutor::getActiveCount)
+                java.util.concurrent.ThreadPoolExecutor::getActiveCount)
                 .description("Number of threads actively executing tasks in the Racer listener pool")
                 .register(registry);
         Gauge.builder("racer.thread-pool.pool-size", executor,
-                        java.util.concurrent.ThreadPoolExecutor::getPoolSize)
+                java.util.concurrent.ThreadPoolExecutor::getPoolSize)
                 .description("Current number of threads in the Racer listener thread pool")
                 .register(registry);
     }
@@ -163,14 +227,17 @@ public class RacerMetrics implements RacerMetricsPort {
     // -----------------------------------------------------------------------
 
     /**
-     * Registers a gauge reporting the current effective concurrency of an AUTO-mode listener.
+     * Registers a gauge reporting the current effective concurrency of an AUTO-mode
+     * listener.
      *
-     * @param listenerId   the listener id (from {@code @RacerListener(id="…")}),
-     *                     used as the {@code listener} tag value
-     * @param concurrencySupplier supplies the current concurrency value on each scrape
+     * @param listenerId          the listener id (from
+     *                            {@code @RacerListener(id="…")}),
+     *                            used as the {@code listener} tag value
+     * @param concurrencySupplier supplies the current concurrency value on each
+     *                            scrape
      */
     public void registerAutoConcurrencyGauge(String listenerId,
-                                              Supplier<Number> concurrencySupplier) {
+            Supplier<Number> concurrencySupplier) {
         Gauge.builder("racer.auto.concurrency", concurrencySupplier, s -> s.get().doubleValue())
                 .description("Current adaptive concurrency level for an AUTO-mode listener")
                 .tag("listener", listenerId)
@@ -185,8 +252,9 @@ public class RacerMetrics implements RacerMetricsPort {
      * Registers a gauge that reports the consumer-group lag for a Redis stream
      * (i.e. the number of pending/unacknowledged entries, as returned by XPENDING).
      *
-     * @param streamKey the Redis stream key, used as the {@code stream} tag value
-     * @param lagSupplier supplies the current lag on each scrape (call XPENDING count)
+     * @param streamKey   the Redis stream key, used as the {@code stream} tag value
+     * @param lagSupplier supplies the current lag on each scrape (call XPENDING
+     *                    count)
      */
     public void registerStreamConsumerLagGauge(String streamKey, Supplier<Number> lagSupplier) {
         Gauge.builder("racer.stream.consumer.lag", lagSupplier, s -> s.get().doubleValue())
@@ -203,7 +271,8 @@ public class RacerMetrics implements RacerMetricsPort {
      * Registers a gauge that reports the circuit breaker state for a listener.
      * Encoded as: {@code 0 = CLOSED}, {@code 1 = OPEN}, {@code 2 = HALF_OPEN}.
      *
-     * <p>The gauge uses a strong reference to the supplied {@code stateSupplier} to
+     * <p>
+     * The gauge uses a strong reference to the supplied {@code stateSupplier} to
      * prevent premature garbage collection that would cause NaN readings.
      *
      * @param listenerId    the listener ID, used as the {@code listener} tag value
@@ -213,9 +282,9 @@ public class RacerMetrics implements RacerMetricsPort {
         // Use Tags-based registration and keep a strong reference to the supplier
         // so Micrometer's weak-reference gauge does not get GC'd (which causes NaN).
         Gauge.builder("racer.circuit.breaker.state", stateSupplier, s -> {
-                    Number val = s.get();
-                    return val != null ? val.doubleValue() : 0.0;
-                })
+            Number val = s.get();
+            return val != null ? val.doubleValue() : 0.0;
+        })
                 .description("Circuit breaker state per listener: 0=CLOSED 1=OPEN 2=HALF_OPEN")
                 .tag("listener", listenerId)
                 .strongReference(true)
@@ -228,12 +297,14 @@ public class RacerMetrics implements RacerMetricsPort {
      */
     @Override
     public void recordCircuitBreakerTransition(String listenerId, String fromState, String toState) {
-        Counter.builder("racer.circuit.breaker.transitions")
-                .description("Number of circuit breaker state transitions")
-                .tag("listener", listenerId)
-                .tag("from", fromState)
-                .tag("to", toState)
-                .register(registry)
+        cbTransitionCounters.computeIfAbsent(
+                listenerId + "|" + fromState + "|" + toState,
+                k -> Counter.builder("racer.circuit.breaker.transitions")
+                        .description("Number of circuit breaker state transitions")
+                        .tag("listener", listenerId)
+                        .tag("from", fromState)
+                        .tag("to", toState)
+                        .register(registry))
                 .increment();
     }
 
@@ -242,10 +313,12 @@ public class RacerMetrics implements RacerMetricsPort {
      */
     @Override
     public void recordCircuitBreakerRejection(String listenerId) {
-        Counter.builder("racer.circuit.breaker.rejected")
-                .description("Number of calls rejected by an open circuit breaker")
-                .tag("listener", listenerId)
-                .register(registry)
+        cbRejectionCounters.computeIfAbsent(
+                listenerId,
+                k -> Counter.builder("racer.circuit.breaker.rejected")
+                        .description("Number of calls rejected by an open circuit breaker")
+                        .tag("listener", listenerId)
+                        .register(registry))
                 .increment();
     }
 
@@ -273,10 +346,12 @@ public class RacerMetrics implements RacerMetricsPort {
      *              {@code "inactive"} when it is relieved
      */
     public void recordBackPressureEvent(String state) {
-        Counter.builder("racer.backpressure.events")
-                .description("Number of back-pressure activation / deactivation transitions")
-                .tag("state", state)
-                .register(registry)
+        bpEventCounters.computeIfAbsent(
+                state,
+                k -> Counter.builder("racer.backpressure.events")
+                        .description("Number of back-pressure activation / deactivation transitions")
+                        .tag("state", state)
+                        .register(registry))
                 .increment();
     }
 
@@ -286,10 +361,12 @@ public class RacerMetrics implements RacerMetricsPort {
      */
     @Override
     public void recordBackPressureDrop(String listenerId) {
-        Counter.builder("racer.backpressure.drops")
-                .description("Messages dropped to DLQ due to back-pressure")
-                .tag("listener", listenerId)
-                .register(registry)
+        bpDropCounters.computeIfAbsent(
+                listenerId,
+                k -> Counter.builder("racer.backpressure.drops")
+                        .description("Messages dropped to DLQ due to back-pressure")
+                        .tag("listener", listenerId)
+                        .register(registry))
                 .increment();
     }
 
@@ -299,30 +376,37 @@ public class RacerMetrics implements RacerMetricsPort {
 
     /**
      * Increments {@code racer.dedup.duplicates} — a message with the given listener
-     * tag was suppressed because it was already processed within the dedup TTL window.
+     * tag was suppressed because it was already processed within the dedup TTL
+     * window.
      *
      * @param listenerId the listener ID, used as the {@code listener} tag value
      */
     public void recordDedupDuplicate(String listenerId) {
-        Counter.builder("racer.dedup.duplicates")
-                .description("Number of duplicate messages suppressed by the dedup service")
-                .tag("listener", listenerId)
-                .register(registry)
+        dedupCounters.computeIfAbsent(
+                listenerId,
+                k -> Counter.builder("racer.dedup.duplicates")
+                        .description("Number of duplicate messages suppressed by the dedup service")
+                        .tag("listener", listenerId)
+                        .register(registry))
                 .increment();
     }
 
     /**
-     * Pre-registers the {@code racer.dedup.duplicates} counter at zero for the given
-     * listener so it is immediately visible in {@code /actuator/metrics} even before
+     * Pre-registers the {@code racer.dedup.duplicates} counter at zero for the
+     * given
+     * listener so it is immediately visible in {@code /actuator/metrics} even
+     * before
      * the first duplicate is detected.
      *
      * @param listenerId the listener ID, used as the {@code listener} tag value
      */
     @Override
     public void initializeDedupCounter(String listenerId) {
-        Counter.builder("racer.dedup.duplicates")
-                .description("Number of duplicate messages suppressed by the dedup service")
-                .tag("listener", listenerId)
-                .register(registry);
+        dedupCounters.computeIfAbsent(
+                listenerId,
+                k -> Counter.builder("racer.dedup.duplicates")
+                        .description("Number of duplicate messages suppressed by the dedup service")
+                        .tag("listener", listenerId)
+                        .register(registry));
     }
 }

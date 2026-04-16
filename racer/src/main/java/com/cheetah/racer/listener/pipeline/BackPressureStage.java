@@ -32,14 +32,20 @@ public final class BackPressureStage implements RacerMessageStage {
     public BackPressureStage(AtomicBoolean pressureActive, String listenerId) {
         this.pressureActive = pressureActive;
         this.listenerId = listenerId;
+        this.rejectError = new BackPressureActiveException(
+                "Back-pressure active on listener '" + listenerId + "'");
     }
+
+    /**
+     * Pre-built exception — avoids allocation + stack-trace capture on every
+     * rejection (#25).
+     */
+    private final BackPressureActiveException rejectError;
 
     @Override
     public Mono<RacerMessage> execute(RacerMessage msg, RacerListenerContext ctx) {
         if (pressureActive.get()) {
-            // Signal error so the caller can route to DLQ
-            return Mono.error(
-                    new BackPressureActiveException("Back-pressure active on listener '" + listenerId + "'"));
+            return Mono.error(rejectError);
         }
         return Mono.just(msg);
     }
@@ -51,6 +57,15 @@ public final class BackPressureStage implements RacerMessageStage {
     public static final class BackPressureActiveException extends RuntimeException {
         public BackPressureActiveException(String message) {
             super(message);
+        }
+
+        /**
+         * Suppress stack-trace capture — this is a flow-control signal, not a bug
+         * (#25).
+         */
+        @Override
+        public Throwable fillInStackTrace() {
+            return this;
         }
     }
 }

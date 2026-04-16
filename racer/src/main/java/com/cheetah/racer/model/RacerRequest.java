@@ -7,7 +7,8 @@ import lombok.NoArgsConstructor;
 
 import java.io.Serializable;
 import java.time.Instant;
-import java.util.UUID;
+
+import com.cheetah.racer.publisher.MessageEnvelopeBuilder;
 
 /**
  * A request message that expects a reply.
@@ -34,11 +35,13 @@ public class RacerRequest implements Serializable {
     /** When the request was created */
     private Instant timestamp;
 
-    /** Where the reply should be sent (Pub/Sub reply channel or response stream key) */
+    /**
+     * Where the reply should be sent (Pub/Sub reply channel or response stream key)
+     */
     private String replyTo;
 
     public static RacerRequest create(String payload, String sender) {
-        String cid = UUID.randomUUID().toString();
+        String cid = MessageEnvelopeBuilder.generateId();
         return RacerRequest.builder()
                 .correlationId(cid)
                 .payload(payload)

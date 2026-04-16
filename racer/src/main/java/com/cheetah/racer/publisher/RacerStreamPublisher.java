@@ -1,28 +1,33 @@
 package com.cheetah.racer.publisher;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.extern.slf4j.Slf4j;
+import java.util.Map;
+
 import org.springframework.data.redis.connection.RedisStreamCommands;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.RecordId;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Mono;
 
-import java.time.Instant;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.UUID;
-
 /**
- * Publishes messages to Redis Streams, providing durable at-least-once delivery.
+ * Publishes messages to Redis Streams, providing durable at-least-once
+ * delivery.
  *
- * <p>Unlike Pub/Sub (which drops messages if no subscriber is connected),
- * a Redis Stream retains entries until they are acknowledged by a consumer group.
- * This publisher is used by {@link com.cheetah.racer.aspect.PublishResultAspect}
+ * <p>
+ * Unlike Pub/Sub (which drops messages if no subscriber is connected),
+ * a Redis Stream retains entries until they are acknowledged by a consumer
+ * group.
+ * This publisher is used by
+ * {@link com.cheetah.racer.aspect.PublishResultAspect}
  * when {@code @PublishResult(durable = true)}.
  *
  * <h3>Entry format</h3>
- * Each stream entry contains a single field {@code "data"} whose value is a JSON object:
+ * Each stream entry contains a single field {@code "data"} whose value is a
+ * JSON object:
+ * 
  * <pre>
  * {
  *   "id":        "&lt;uuid&gt;",
@@ -38,18 +43,23 @@ public class RacerStreamPublisher {
     private final ReactiveRedisTemplate<String, String> redisTemplate;
     private final ObjectMapper objectMapper;
     private final long streamMaxLen;
+    /** Pre-computed XADD options — avoids per-publish allocation (#9). */
+    private final RedisStreamCommands.XAddOptions xAddOptions;
 
     public RacerStreamPublisher(ReactiveRedisTemplate<String, String> redisTemplate,
-                                ObjectMapper objectMapper) {
+            ObjectMapper objectMapper) {
         this(redisTemplate, objectMapper, 10_000L);
     }
 
     public RacerStreamPublisher(ReactiveRedisTemplate<String, String> redisTemplate,
-                                ObjectMapper objectMapper,
-                                long streamMaxLen) {
+            ObjectMapper objectMapper,
+            long streamMaxLen) {
         this.redisTemplate = redisTemplate;
-        this.objectMapper  = objectMapper;
-        this.streamMaxLen  = streamMaxLen;
+        this.objectMapper = objectMapper;
+        this.streamMaxLen = streamMaxLen;
+        this.xAddOptions = streamMaxLen > 0
+                ? RedisStreamCommands.XAddOptions.maxlen(streamMaxLen).approximateTrimming(true)
+                : RedisStreamCommands.XAddOptions.none();
     }
 
     /**
@@ -61,24 +71,14 @@ public class RacerStreamPublisher {
      * @return Mono of the assigned stream entry {@link RecordId}
      */
     public Mono<RecordId> publishToStream(String streamKey, Object payload, String sender) {
-        return Mono.fromCallable(() -> {
-                    Map<String, Object> envelope = new LinkedHashMap<>();
-                    envelope.put("id",        UUID.randomUUID().toString());
-                    envelope.put("sender",    sender);
-                    envelope.put("timestamp", Instant.now().toString());
-                    envelope.put("payload",   payload);
-                    return objectMapper.writeValueAsString(envelope);
-                })
+        return MessageEnvelopeBuilder.buildStream(objectMapper,
+                sender != null ? sender : "system", payload)
                 .flatMap(json -> {
                     MapRecord<String, String, String> record = MapRecord.create(
                             streamKey, Map.of("data", json));
-                    RedisStreamCommands.XAddOptions opts = RedisStreamCommands.XAddOptions
-                            .maxlen(streamMaxLen).approximateTrimming(true);
-                    return redisTemplate.opsForStream().add(record, opts);
+                    return redisTemplate.opsForStream().add(record, xAddOptions);
                 })
-                .doOnSuccess(id ->
-                        log.debug("[racer-stream] Published to '{}' → entry {}", streamKey, id))
-                .doOnError(ex ->
-                        log.error("[racer-stream] Failed to publish to '{}': {}", streamKey, ex.getMessage()));
+                .doOnSuccess(id -> log.debug("[racer-stream] Published to '{}' → entry {}", streamKey, id))
+                .doOnError(ex -> log.error("[racer-stream] Failed to publish to '{}': {}", streamKey, ex.getMessage()));
     }
 }

@@ -69,6 +69,15 @@ public class RacerChannelPublisherImpl implements RacerChannelPublisher {
         @Nullable
         private final RacerRateLimiter rateLimiter;
 
+        /** Pre-computed XADD options — avoids per-publish allocation (#9). */
+        private final RedisStreamCommands.XAddOptions xAddOptions;
+
+        /**
+         * Pre-computed transport label for logging/metrics — avoids per-publish ternary
+         * (#21).
+         */
+        private final String publishMode;
+
         public RacerChannelPublisherImpl(ReactiveRedisTemplate<String, String> redisTemplate,
                         ObjectMapper objectMapper,
                         String channelName,
@@ -128,6 +137,10 @@ public class RacerChannelPublisherImpl implements RacerChannelPublisher {
                 this.racerMetrics = racerMetrics != null ? racerMetrics : NoOpRacerMetrics.INSTANCE;
                 this.schemaRegistry = schemaRegistry;
                 this.rateLimiter = rateLimiter;
+                this.xAddOptions = streamMaxLen > 0
+                                ? RedisStreamCommands.XAddOptions.maxlen(streamMaxLen).approximateTrimming(true)
+                                : RedisStreamCommands.XAddOptions.none();
+                this.publishMode = durable ? "stream" : "pubsub";
         }
 
         @Override
@@ -151,20 +164,15 @@ public class RacerChannelPublisherImpl implements RacerChannelPublisher {
                                         if (durable) {
                                                 MapRecord<String, String, String> record = MapRecord
                                                                 .create(durableStreamKey, Map.of("data", json));
-                                                RedisStreamCommands.XAddOptions opts = streamMaxLen > 0
-                                                                ? RedisStreamCommands.XAddOptions.maxlen(streamMaxLen)
-                                                                                .approximateTrimming(true)
-                                                                : RedisStreamCommands.XAddOptions.none();
                                                 return redisTemplate.opsForStream()
-                                                                .add(record, opts)
+                                                                .add(record, xAddOptions)
                                                                 .map(id -> 1L);
                                         }
                                         return redisTemplate.convertAndSend(channelName, json);
                                 })
                                 .doOnSuccess(count -> {
-                                        log.debug("[racer] Published to '{}' ({})", channelName,
-                                                        durable ? "stream" : "pubsub");
-                                        racerMetrics.recordPublished(channelName, durable ? "stream" : "pubsub");
+                                        log.debug("[racer] Published to '{}' ({})", channelName, publishMode);
+                                        racerMetrics.recordPublished(channelName, publishMode);
                                 })
                                 .doOnError(ex -> log.error("[racer] Failed to publish to '{}': {}", channelName,
                                                 ex.getMessage()));
@@ -187,20 +195,15 @@ public class RacerChannelPublisherImpl implements RacerChannelPublisher {
                                         if (durable) {
                                                 MapRecord<String, String, String> record = MapRecord
                                                                 .create(durableStreamKey, Map.of("data", json));
-                                                RedisStreamCommands.XAddOptions opts = streamMaxLen > 0
-                                                                ? RedisStreamCommands.XAddOptions.maxlen(streamMaxLen)
-                                                                                .approximateTrimming(true)
-                                                                : RedisStreamCommands.XAddOptions.none();
                                                 return redisTemplate.opsForStream()
-                                                                .add(record, opts)
+                                                                .add(record, xAddOptions)
                                                                 .map(id -> 1L);
                                         }
                                         return redisTemplate.convertAndSend(channelName, json);
                                 })
                                 .doOnSuccess(count -> {
-                                        log.debug("[racer] Published to '{}' ({})", channelName,
-                                                        durable ? "stream" : "pubsub");
-                                        racerMetrics.recordPublished(channelName, durable ? "stream" : "pubsub");
+                                        log.debug("[racer] Published to '{}' ({})", channelName, publishMode);
+                                        racerMetrics.recordPublished(channelName, publishMode);
                                 })
                                 .doOnError(ex -> log.error("[racer] Failed to publish to '{}': {}", channelName,
                                                 ex.getMessage()));
@@ -222,20 +225,16 @@ public class RacerChannelPublisherImpl implements RacerChannelPublisher {
                                         if (durable) {
                                                 MapRecord<String, String, String> record = MapRecord
                                                                 .create(durableStreamKey, Map.of("data", json));
-                                                RedisStreamCommands.XAddOptions opts = streamMaxLen > 0
-                                                                ? RedisStreamCommands.XAddOptions.maxlen(streamMaxLen)
-                                                                                .approximateTrimming(true)
-                                                                : RedisStreamCommands.XAddOptions.none();
                                                 return redisTemplate.opsForStream()
-                                                                .add(record, opts)
+                                                                .add(record, xAddOptions)
                                                                 .map(id -> 1L);
                                         }
                                         return redisTemplate.convertAndSend(channelName, json);
                                 })
                                 .doOnSuccess(count -> {
                                         log.debug("[racer] Published (routed) to '{}' ({})", channelName,
-                                                        durable ? "stream" : "pubsub");
-                                        racerMetrics.recordPublished(channelName, durable ? "stream" : "pubsub");
+                                                        publishMode);
+                                        racerMetrics.recordPublished(channelName, publishMode);
                                 })
                                 .doOnError(ex -> log.error("[racer] Failed to publish (routed) to '{}': {}",
                                                 channelName, ex.getMessage()));

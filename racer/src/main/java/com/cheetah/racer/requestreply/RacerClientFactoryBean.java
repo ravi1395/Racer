@@ -2,6 +2,7 @@ package com.cheetah.racer.requestreply;
 
 import com.cheetah.racer.annotation.RacerRequestReply;
 import com.cheetah.racer.config.RacerProperties;
+import com.cheetah.racer.exception.RacerRequestReplyTimeoutException;
 import com.cheetah.racer.model.RacerReply;
 import com.cheetah.racer.model.RacerRequest;
 import com.cheetah.racer.util.RacerChannelResolver;
@@ -30,8 +31,10 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * {@link FactoryBean} that creates a reactive proxy for a {@link com.cheetah.racer.annotation.RacerClient}
- * interface. Each method annotated with {@link RacerRequestReply} is wired as a request-reply
+ * {@link FactoryBean} that creates a reactive proxy for a
+ * {@link com.cheetah.racer.annotation.RacerClient}
+ * interface. Each method annotated with {@link RacerRequestReply} is wired as a
+ * request-reply
  * caller over Redis Pub/Sub or Streams.
  */
 @Slf4j
@@ -39,23 +42,30 @@ public class RacerClientFactoryBean<T> implements FactoryBean<T>, EnvironmentAwa
 
     private final Class<T> clientInterface;
 
-    @Autowired private ReactiveRedisTemplate<String, String> redisTemplate;
-    @Autowired private ObjectMapper objectMapper;
-    @Autowired private RacerProperties racerProperties;
-    @Nullable @Autowired(required = false) private ReactiveRedisMessageListenerContainer listenerContainer;
+    @Autowired
+    private ReactiveRedisTemplate<String, String> redisTemplate;
+    @Autowired
+    private ObjectMapper objectMapper;
+    @Autowired
+    private RacerProperties racerProperties;
+    @Nullable
+    @Autowired(required = false)
+    private ReactiveRedisMessageListenerContainer listenerContainer;
 
     private Environment environment;
 
     /** Pending pub/sub requests waiting for a reply, keyed by correlationId. */
     private final ConcurrentHashMap<String, Sinks.One<RacerReply>> pendingReplies = new ConcurrentHashMap<>();
-    @Nullable private volatile Disposable pubSubReplySubscription;
+    @Nullable
+    private volatile Disposable pubSubReplySubscription;
 
     public RacerClientFactoryBean(Class<T> clientInterface) {
         this.clientInterface = clientInterface;
     }
 
     /**
-     * Eagerly establishes a single pattern subscription to {@code racer:reply:*} so that
+     * Eagerly establishes a single pattern subscription to {@code racer:reply:*} so
+     * that
      * the Redis SUBSCRIBE is confirmed well before the first request is published.
      * This eliminates the per-request SUBSCRIBE/PUBLISH race condition.
      */
@@ -79,7 +89,10 @@ public class RacerClientFactoryBean<T> implements FactoryBean<T>, EnvironmentAwa
         }
     }
 
-    /** Routes an incoming pub/sub reply JSON to the waiting {@link Sinks.One}, if any. */
+    /**
+     * Routes an incoming pub/sub reply JSON to the waiting {@link Sinks.One}, if
+     * any.
+     */
     private void routePubSubReply(String json) {
         try {
             RacerReply reply = objectMapper.readValue(json, RacerReply.class);
@@ -103,38 +116,56 @@ public class RacerClientFactoryBean<T> implements FactoryBean<T>, EnvironmentAwa
     @Override
     @SuppressWarnings("unchecked")
     public T getObject() {
+        // Pre-compute annotation + resolved timeout per method (#26)
+        var methodCache = new java.util.concurrent.ConcurrentHashMap<Method, MethodConfig>();
+        for (Method m : clientInterface.getMethods()) {
+            if (m.getDeclaringClass() == Object.class)
+                continue;
+            RacerRequestReply ann = m.getAnnotation(RacerRequestReply.class);
+            if (ann != null) {
+                Duration timeout = parseDuration(resolve(ann.timeout()), Duration.ofSeconds(5));
+                boolean isStream = !ann.stream().isEmpty() || !ann.streamRef().isEmpty();
+                methodCache.put(m, new MethodConfig(ann, timeout, isStream));
+            }
+        }
+
         return (T) Proxy.newProxyInstance(
                 clientInterface.getClassLoader(),
-                new Class<?>[]{ clientInterface },
+                new Class<?>[] { clientInterface },
                 (proxy, method, args) -> {
                     if (method.getDeclaringClass() == Object.class) {
                         return method.invoke(this, args);
                     }
 
-                    RacerRequestReply ann = method.getAnnotation(RacerRequestReply.class);
-                    if (ann == null) {
+                    MethodConfig cfg = methodCache.get(method);
+                    if (cfg == null) {
                         throw new UnsupportedOperationException(
                                 "Method " + method.getName() + " is not annotated with @RacerRequestReply");
                     }
 
-                    return invokeRequestReply(method, ann, args);
+                    return invokeRequestReply(method, cfg.ann, cfg.timeout, cfg.isStream, args);
                 });
     }
 
-    private Object invokeRequestReply(Method method, RacerRequestReply ann, Object[] args) {
-        Duration timeout = parseDuration(resolve(ann.timeout()), Duration.ofSeconds(5));
-        boolean isStream = !ann.stream().isEmpty() || !ann.streamRef().isEmpty();
+    /** Cached per-method config for the proxy InvocationHandler. */
+    private record MethodConfig(RacerRequestReply ann, Duration timeout, boolean isStream) {
+    }
+
+    private Object invokeRequestReply(Method method, RacerRequestReply ann,
+            Duration timeout, boolean isStream, Object[] args) {
 
         String payload = serializeArgs(args);
         RacerRequest request = RacerRequest.create(payload, "racer-client");
 
         Mono<RacerReply> replyMono;
         if (isStream) {
-            String streamKey = RacerChannelResolver.resolveStreamKey(resolve(ann.stream()), resolve(ann.streamRef()), racerProperties);
+            String streamKey = RacerChannelResolver.resolveStreamKey(resolve(ann.stream()), resolve(ann.streamRef()),
+                    racerProperties);
             request.setReplyTo("racer:stream:response:" + request.getCorrelationId());
             replyMono = sendStreamRequest(request, streamKey, timeout);
         } else {
-            String channel = RacerChannelResolver.resolveChannel(resolve(ann.channel()), resolve(ann.channelRef()), racerProperties);
+            String channel = RacerChannelResolver.resolveChannel(resolve(ann.channel()), resolve(ann.channelRef()),
+                    racerProperties);
             request.setReplyTo("racer:reply:" + request.getCorrelationId());
             replyMono = sendPubSubRequest(request, channel, timeout);
         }
@@ -164,7 +195,8 @@ public class RacerClientFactoryBean<T> implements FactoryBean<T>, EnvironmentAwa
             String err = reply != null ? reply.getErrorMessage() : "timeout";
             throw new RacerRequestReplyException(err);
         }
-        if (String.class.equals(returnType)) return reply.getPayload();
+        if (String.class.equals(returnType))
+            return reply.getPayload();
         return deserializePayload(reply.getPayload(), returnType);
     }
 
@@ -200,99 +232,153 @@ public class RacerClientFactoryBean<T> implements FactoryBean<T>, EnvironmentAwa
 
     private Mono<RacerReply> sendStreamRequest(RacerRequest request, String streamKey, Duration timeout) {
         String responseStreamKey = request.getReplyTo();
-        String correlationId     = request.getCorrelationId();
+        String correlationId = request.getCorrelationId();
 
         MapRecord<String, String, String> entry = MapRecord.create(streamKey, Map.of(
                 "correlationId", correlationId,
                 "replyTo", responseStreamKey,
-                "payload", request.getPayload() != null ? request.getPayload() : ""
-        ));
+                "payload", request.getPayload() != null ? request.getPayload() : ""));
 
         return redisTemplate.opsForStream().add(entry)
                 .then(pollForStreamReply(responseStreamKey, correlationId, timeout))
                 .doFinally(signal ->
-                        // Delete the ephemeral reply stream after the request completes (success, error, or cancel).
-                        // Use onErrorResume so a Redis hiccup during cleanup does not mask the original result,
-                        // and log at WARN so leaked keys are visible in ops dashboards without alerting.
-                        redisTemplate.delete(responseStreamKey)
-                                .doOnError(ex -> log.warn(
-                                        "[RACER-CLIENT] Failed to clean up response stream '{}': {}. "
+                // Delete the ephemeral reply stream after the request completes (success,
+                // error, or cancel).
+                // Use onErrorResume so a Redis hiccup during cleanup does not mask the original
+                // result,
+                // and log at WARN so leaked keys are visible in ops dashboards without
+                // alerting.
+                redisTemplate.delete(responseStreamKey)
+                        .doOnError(ex -> log.warn(
+                                "[RACER-CLIENT] Failed to clean up response stream '{}': {}. "
                                         + "Key may leak — consider adding this key to your retention policy.",
-                                        responseStreamKey, ex.getMessage()))
-                                .onErrorResume(ex -> Mono.empty())
-                                .subscribe());
+                                responseStreamKey, ex.getMessage()))
+                        .onErrorResume(ex -> Mono.empty())
+                        .subscribe());
     }
 
+    /**
+     * Waits for a reply on the ephemeral {@code responseStreamKey} using a single
+     * {@code XREAD BLOCK} command, replacing the previous poll-and-repeat loop
+     * (#2).
+     *
+     * <p>
+     * Benefits over polling:
+     * <ul>
+     * <li>Near-zero latency: Redis wakes the read the instant the responder
+     * writes.</li>
+     * <li>O(1) reads: only one XREAD is ever issued regardless of how long the
+     * reply
+     * takes; previously each poll re-read from stream start (O(N×M)).</li>
+     * <li>No busy-waiting: the connection blocks on the Redis side, freeing the
+     * Reactor scheduler thread.</li>
+     * </ul>
+     *
+     * <p>
+     * Cleanup of the ephemeral stream key is handled by the {@code doFinally} in
+     * {@link #sendStreamRequest} and fires on all terminal signals (complete,
+     * error,
+     * cancel).
+     */
+    @SuppressWarnings("unchecked")
     private Mono<RacerReply> pollForStreamReply(String responseStreamKey, String correlationId, Duration timeout) {
-        // Use the configured poll interval rather than a hardcoded 200 ms value so that
-        // latency-sensitive services can reduce it via racer.request-reply.stream-poll-interval-ms.
-        long pollIntervalMs = racerProperties.getRequestReply().getStreamPollIntervalMs();
-        long maxAttempts    = timeout.toMillis() / Math.max(1, pollIntervalMs);
-
-        return Mono.defer(() -> {
-            Mono<RacerReply> one = (Mono<RacerReply>) redisTemplate
-                    .opsForStream()
-                    .read(StreamOffset.fromStart(responseStreamKey))
-                    .next()
-                    .flatMap(record -> {
-                        @SuppressWarnings("unchecked")
-                        Map<String, Object> body = (Map<String, Object>) (Map<?, ?>) record.getValue();
-                        Object payloadObj = body.get("payload");
-                        if (payloadObj == null) return Mono.<RacerReply>empty();
-                        try {
-                            return Mono.just(objectMapper.readValue(payloadObj.toString(), RacerReply.class));
-                        } catch (Exception e) {
-                            return Mono.<RacerReply>error(e);
-                        }
-                    });
-            return one;
-        })
-        // Repeat until a reply arrives or maxAttempts is exhausted, sleeping pollIntervalMs between tries
-        .repeatWhenEmpty(companion ->
-                companion.take(maxAttempts).delayElements(Duration.ofMillis(pollIntervalMs)))
-        .timeout(timeout);
+        return (Mono<RacerReply>) redisTemplate.opsForStream()
+                // XREAD BLOCK <timeout> COUNT 1 STREAMS <replyStream> 0-0
+                // Redis holds the connection until a record arrives or the block duration
+                // expires.
+                .read(StreamReadOptions.empty().block(timeout).count(1),
+                        StreamOffset.fromStart(responseStreamKey))
+                .next()
+                .flatMap(record -> {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> body = (Map<String, Object>) (Map<?, ?>) record.getValue();
+                    Object payloadObj = body.get("payload");
+                    if (payloadObj == null)
+                        return Mono.<RacerReply>empty();
+                    try {
+                        return Mono.just(objectMapper.readValue(payloadObj.toString(), RacerReply.class));
+                    } catch (Exception e) {
+                        return Mono.<RacerReply>error(e);
+                    }
+                })
+                // XREAD BLOCK returns empty when the block duration expires without a record.
+                // Convert to a typed exception so callers see a clear
+                // RacerRequestReplyTimeoutException.
+                .switchIfEmpty(Mono.error(new RacerRequestReplyTimeoutException(
+                        "No reply on '" + responseStreamKey + "' within " + timeout)))
+                // Safety net: Reactor timeout slightly wider than the Redis BLOCK duration
+                // guards against Redis not honouring its own block timeout (e.g. network
+                // issue).
+                .timeout(timeout.plusSeconds(2));
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private String serializeArgs(Object[] args) {
-        if (args == null || args.length == 0) return "{}";
+        if (args == null || args.length == 0)
+            return "{}";
         if (args.length == 1) {
             Object arg = args[0];
-            if (arg instanceof String s) return s;
-            try { return objectMapper.writeValueAsString(arg); } catch (Exception e) { return arg.toString(); }
+            if (arg instanceof String s)
+                return s;
+            try {
+                return objectMapper.writeValueAsString(arg);
+            } catch (Exception e) {
+                return arg.toString();
+            }
         }
-        try { return objectMapper.writeValueAsString(args); } catch (Exception e) { return java.util.Arrays.toString(args); }
+        try {
+            return objectMapper.writeValueAsString(args);
+        } catch (Exception e) {
+            return java.util.Arrays.toString(args);
+        }
     }
 
     private Object deserializePayload(String payload, java.lang.reflect.Type targetType) {
-        if (payload == null || payload.isBlank()) return null;
+        if (payload == null || payload.isBlank())
+            return null;
         if (targetType instanceof Class<?> cls) {
-            if (String.class.equals(cls)) return payload;
-            try { return objectMapper.readValue(payload, cls); } catch (Exception e) { return payload; }
+            if (String.class.equals(cls))
+                return payload;
+            try {
+                return objectMapper.readValue(payload, cls);
+            } catch (Exception e) {
+                return payload;
+            }
         }
         if (targetType instanceof java.lang.reflect.ParameterizedType pt) {
             try {
                 return objectMapper.readValue(payload,
                         objectMapper.getTypeFactory().constructType(pt));
-            } catch (Exception e) { return payload; }
+            } catch (Exception e) {
+                return payload;
+            }
         }
         return payload;
     }
 
-
     private String resolve(String value) {
-        if (value == null || value.isEmpty()) return value == null ? "" : value;
-        try { return environment.resolvePlaceholders(value); } catch (Exception e) { return value; }
+        if (value == null || value.isEmpty())
+            return value == null ? "" : value;
+        try {
+            return environment.resolvePlaceholders(value);
+        } catch (Exception e) {
+            return value;
+        }
     }
 
     private static Duration parseDuration(String value, Duration fallback) {
-        if (value == null || value.isBlank()) return fallback;
+        if (value == null || value.isBlank())
+            return fallback;
         try {
-            // Shorthand: "500ms", "5s", "1m" — check "ms" before "s" to avoid substring match
-            if (value.endsWith("ms")) return Duration.ofMillis(Long.parseLong(value.substring(0, value.length() - 2)));
-            if (value.endsWith("s")) return Duration.ofSeconds(Long.parseLong(value.substring(0, value.length() - 1)));
-            if (value.endsWith("m")) return Duration.ofMinutes(Long.parseLong(value.substring(0, value.length() - 1)));
+            // Shorthand: "500ms", "5s", "1m" — check "ms" before "s" to avoid substring
+            // match
+            if (value.endsWith("ms"))
+                return Duration.ofMillis(Long.parseLong(value.substring(0, value.length() - 2)));
+            if (value.endsWith("s"))
+                return Duration.ofSeconds(Long.parseLong(value.substring(0, value.length() - 1)));
+            if (value.endsWith("m"))
+                return Duration.ofMinutes(Long.parseLong(value.substring(0, value.length() - 1)));
             return Duration.parse(value);
         } catch (Exception e) {
             return fallback;
@@ -311,6 +397,8 @@ public class RacerClientFactoryBean<T> implements FactoryBean<T>, EnvironmentAwa
 
     /** Runtime exception thrown when a request-reply operation fails. */
     public static class RacerRequestReplyException extends RuntimeException {
-        public RacerRequestReplyException(String message) { super(message); }
+        public RacerRequestReplyException(String message) {
+            super(message);
+        }
     }
 }

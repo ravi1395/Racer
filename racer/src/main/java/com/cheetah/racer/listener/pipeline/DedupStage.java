@@ -57,7 +57,7 @@ public final class DedupStage implements RacerMessageStage {
 
     @Override
     public Mono<RacerMessage> execute(RacerMessage msg, RacerListenerContext ctx) {
-        String effectiveKey = resolveKey(msg, ctx.channel());
+        String effectiveKey = resolveKey(msg, ctx);
         return dedupService.checkAndMarkProcessed(effectiveKey, ctx.listenerId())
                 .flatMap(shouldProcess -> {
                     if (!shouldProcess) {
@@ -71,22 +71,28 @@ public final class DedupStage implements RacerMessageStage {
 
     /**
      * Resolves the dedup key from the message envelope or from a payload field.
+     * Uses the pre-parsed {@link RacerListenerContext#parsedPayload()} when
+     * available to avoid a redundant JSON parse (#6).
      *
-     * @param msg     the message being processed
-     * @param channel the channel the message arrived on
+     * @param msg the message being processed
+     * @param ctx the listener context carrying channel and optional parsed payload
      * @return the resolved dedup key
      */
-    private String resolveKey(RacerMessage msg, String channel) {
+    private String resolveKey(RacerMessage msg, RacerListenerContext ctx) {
         if (fieldKey != null && !fieldKey.isEmpty()) {
             String payload = msg.getPayload() != null ? msg.getPayload() : "";
             try {
-                com.fasterxml.jackson.databind.JsonNode node = objectMapper.readTree(payload);
+                // Reuse the pre-parsed tree when available — avoids a second
+                // objectMapper.readTree() call on the same payload.
+                com.fasterxml.jackson.databind.JsonNode node = ctx.parsedPayload() != null
+                        ? ctx.parsedPayload()
+                        : objectMapper.readTree(payload);
                 com.fasterxml.jackson.databind.JsonNode field = node.get(fieldKey);
                 if (field != null && !field.isNull()) {
-                    return channel + ":" + field.asText();
+                    return ctx.channel() + ":" + field.asText();
                 }
                 log.warn("[RACER-LISTENER] dedupKey '{}' not found in payload for channel '{}' — "
-                        + "falling back to envelope id.", fieldKey, channel);
+                        + "falling back to envelope id.", fieldKey, ctx.channel());
             } catch (Exception e) {
                 log.warn("[RACER-LISTENER] Could not extract dedupKey '{}' from payload: {} — "
                         + "falling back to envelope id.", fieldKey, e.getMessage());

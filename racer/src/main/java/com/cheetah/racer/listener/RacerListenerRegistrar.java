@@ -543,15 +543,18 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
 
             // flatMap has no reactive cap (Integer.MAX_VALUE); the semaphore inside
             // AdaptiveConcurrencyTuner is the sole throttle and is dynamically resized.
-            final Scheduler scheduler = schedulerForListener(listenerId, method,
-                    racerProperties.getThreadPool().getMaxSize());
+            // acquireSlot() calls semaphore.acquire() which blocks; always run it
+            // on boundedElastic to avoid blocking Schedulers.parallel() (#11).
+            // The schedulerForListener call's side effect registers the per-listener
+            // scheduler in perListenerSchedulers so InvocationStage picks it up.
+            schedulerForListener(listenerId, method, racerProperties.getThreadPool().getMaxSize());
             Disposable sub = listenerContainer
                     .receive(ChannelTopic.of(resolvedChannel))
                     .flatMap(msg -> Mono.fromCallable(() -> {
                         tuner.acquireSlot();
                         return msg;
                     })
-                            .subscribeOn(scheduler)
+                            .subscribeOn(Schedulers.boundedElastic())
                             .flatMap(m -> pipelineDispatch(pipeline, listenerCtx, m.getMessage())
                                     .doFinally(signal -> tuner.releaseSlot()))
                             .onErrorResume(ex -> {
@@ -805,7 +808,7 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
         }
 
         // Stage 5: handler invocation
-        stages.add(new InvocationStage(bean, method, listenerScheduler,
+        stages.add(new InvocationStage(listenerId, bean, method, listenerScheduler,
                 perListenerSchedulers, racerMetrics, listenerRegistrations, wasForwarded, cb));
 
         return new DispatchPipeline(stages);
@@ -828,31 +831,56 @@ public class RacerListenerRegistrar extends AbstractRacerRegistrar {
         if (isStopping()) {
             return Mono.empty();
         }
-        return Mono.<Void>defer(() -> {
-            RacerMessage message;
-            try {
-                message = objectMapper.readValue(rawJson, RacerMessage.class);
-            } catch (Exception e) {
-                log.error("[RACER-LISTENER] '{}' — failed to deserialize message from channel '{}': {}",
-                        ctx.listenerId(), ctx.channel(), e.getMessage());
-                return Mono.empty();
-            }
-            log.debug("[RACER-LISTENER] '{}' received message id={}", ctx.listenerId(), message.getId());
-
-            return pipeline.execute(message, ctx)
-                    .doOnSuccess(v -> incrementProcessed(ctx.listenerId()))
-                    .onErrorResume(ex -> {
-                        incrementFailed(ctx.listenerId());
-                        if (ex instanceof BackPressureStage.BackPressureActiveException) {
-                            racerMetrics.recordBackPressureDrop(ctx.listenerId());
-                            log.warn("[RACER-LISTENER] '{}' back-pressure active — routing message to DLQ",
-                                    ctx.listenerId());
-                        }
-                        return enqueueDeadLetter(message, ex).then();
-                    });
-        })
+        // Offload deserialization from the Netty/Lettuce I/O thread to boundedElastic
+        // (#4).
+        return Mono.fromCallable(() -> objectMapper.readValue(rawJson, RacerMessage.class))
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMap(message -> {
+                    log.debug("[RACER-LISTENER] '{}' received message id={}", ctx.listenerId(), message.getId());
+                    // Pre-parse the payload once and pass it through the pipeline context (#6)
+                    // so that DedupStage and InvocationStage can share the same JSON tree.
+                    com.fasterxml.jackson.databind.JsonNode parsedPayload = tryParsePayloadNode(message.getPayload());
+                    RacerListenerContext msgCtx = parsedPayload != null
+                            ? new RacerListenerContext(ctx.listenerId(), ctx.channel(), ctx.method(), parsedPayload)
+                            : ctx;
+                    return pipeline.execute(message, msgCtx)
+                            .doOnSuccess(v -> incrementProcessed(ctx.listenerId()))
+                            .onErrorResume(ex -> {
+                                incrementFailed(ctx.listenerId());
+                                if (ex instanceof BackPressureStage.BackPressureActiveException) {
+                                    racerMetrics.recordBackPressureDrop(ctx.listenerId());
+                                    log.warn("[RACER-LISTENER] '{}' back-pressure active — routing message to DLQ",
+                                            ctx.listenerId());
+                                }
+                                return enqueueDeadLetter(message, ex).then();
+                            });
+                })
+                .onErrorResume(Exception.class, e -> {
+                    log.error("[RACER-LISTENER] '{}' — failed to deserialize message from channel '{}': {}",
+                            ctx.listenerId(), ctx.channel(), e.getMessage());
+                    return Mono.empty();
+                })
                 .doOnSubscribe(s -> incrementInFlight())
                 .doFinally(s -> decrementInFlight());
+    }
+
+    /**
+     * Attempts to parse {@code payload} into a
+     * {@link com.fasterxml.jackson.databind.JsonNode}.
+     * Returns {@code null} for non-JSON payloads or empty strings — callers must
+     * guard against null.
+     */
+    @org.springframework.lang.Nullable
+    private com.fasterxml.jackson.databind.JsonNode tryParsePayloadNode(
+            @org.springframework.lang.Nullable String payload) {
+        if (payload == null || payload.isBlank()) {
+            return null;
+        }
+        try {
+            return objectMapper.readTree(payload);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     // ── Test harness API ──────────────────────────────────────────────────────

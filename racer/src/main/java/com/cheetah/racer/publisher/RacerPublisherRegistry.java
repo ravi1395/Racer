@@ -70,6 +70,13 @@ public class RacerPublisherRegistry {
     private final Map<String, RacerChannelPublisher> registry = new ConcurrentHashMap<>();
 
     /**
+     * Reverse lookup from Redis channel name → publisher.
+     * Built in {@link #init()} for O(1) lookup in
+     * {@link #getPublisherByChannelName}.
+     */
+    private final Map<String, RacerChannelPublisher> byChannelName = new ConcurrentHashMap<>();
+
+    /**
      * Full constructor used by
      * {@link com.cheetah.racer.config.RacerAutoConfiguration}.
      *
@@ -135,10 +142,12 @@ public class RacerPublisherRegistry {
     @PostConstruct
     public void init() {
         // Register the default channel
-        registry.put(DEFAULT_ALIAS, new RacerChannelPublisherImpl(
+        RacerChannelPublisher defaultPub = new RacerChannelPublisherImpl(
                 redisTemplate, objectMapper,
                 properties.getDefaultChannel(), DEFAULT_ALIAS, "racer",
-                false, "", 0L, racerMetrics, schemaRegistry, rateLimiter));
+                false, "", 0L, racerMetrics, schemaRegistry, rateLimiter);
+        registry.put(DEFAULT_ALIAS, defaultPub);
+        byChannelName.put(properties.getDefaultChannel(), defaultPub);
         log.info("[racer] Default channel registered: '{}'", properties.getDefaultChannel());
 
         // Register each named channel
@@ -147,22 +156,27 @@ public class RacerPublisherRegistry {
                 log.warn("[racer] Channel alias '{}' has no 'name' configured — skipping.", alias);
                 return;
             }
+            RacerChannelPublisher pub;
             if (channelProps.isDurable()) {
                 String actualStreamKey = channelProps.getStreamKey().isBlank()
                         ? channelProps.getName() + ":stream"
                         : channelProps.getStreamKey();
-                registry.put(alias, new RacerChannelPublisherImpl(
+                pub = new RacerChannelPublisherImpl(
                         redisTemplate, objectMapper,
                         channelProps.getName(), alias, channelProps.getSender(),
                         true, actualStreamKey,
                         properties.getRetention().getStreamMaxLen(),
-                        racerMetrics, schemaRegistry, rateLimiter));
+                        racerMetrics, schemaRegistry, rateLimiter);
+                registry.put(alias, pub);
+                byChannelName.put(channelProps.getName(), pub);
                 log.info("[racer] Channel '{}' registered → stream '{}' (durable)", alias, actualStreamKey);
             } else {
-                registry.put(alias, new RacerChannelPublisherImpl(
+                pub = new RacerChannelPublisherImpl(
                         redisTemplate, objectMapper,
                         channelProps.getName(), alias, channelProps.getSender(),
-                        false, "", 0L, racerMetrics, schemaRegistry, rateLimiter));
+                        false, "", 0L, racerMetrics, schemaRegistry, rateLimiter);
+                registry.put(alias, pub);
+                byChannelName.put(channelProps.getName(), pub);
                 log.info("[racer] Channel '{}' registered → '{}'", alias, channelProps.getName());
             }
         });
@@ -223,5 +237,26 @@ public class RacerPublisherRegistry {
      */
     public Map<String, RacerChannelPublisher> getAll() {
         return Map.copyOf(registry);
+    }
+
+    /**
+     * O(1) lookup of a publisher by its Redis channel name (e.g.
+     * {@code "racer:orders"}).
+     * Falls back to the default publisher when no match is found.
+     *
+     * <p>
+     * This avoids the O(N) stream scan that was previously done in
+     * {@link com.cheetah.racer.aspect.PublishResultAspect} on every
+     * {@code @PublishResult} invocation (#10).
+     *
+     * @param channelName the Redis channel name (not the alias)
+     * @return the publisher for that channel, or the default publisher
+     */
+    public RacerChannelPublisher getPublisherByChannelName(String channelName) {
+        if (channelName == null || channelName.isBlank()) {
+            return registry.get(DEFAULT_ALIAS);
+        }
+        RacerChannelPublisher pub = byChannelName.get(channelName);
+        return pub != null ? pub : registry.get(DEFAULT_ALIAS);
     }
 }

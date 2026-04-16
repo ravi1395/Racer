@@ -46,7 +46,7 @@ public final class NoOpRacerMetrics implements RacerMetricsPort {
 
     @Override
     public Timer.Sample startRequestReplyTimer() {
-        return Timer.start(io.micrometer.core.instrument.Clock.SYSTEM);
+        return null;
     }
 
     @Override

@@ -1,26 +1,36 @@
 package com.cheetah.racer.tx;
 
-import com.cheetah.racer.publisher.RacerPipelinedPublisher;
-import com.cheetah.racer.publisher.RacerPublisherRegistry;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.lang.Nullable;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
 
+import org.springframework.lang.Nullable;
+
+import com.cheetah.racer.publisher.RacerPipelinedPublisher;
+import com.cheetah.racer.publisher.RacerPublisherRegistry;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+
+import lombok.extern.slf4j.Slf4j;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
 /**
- * Best-effort batch publisher that sends to multiple channels in a single reactive chain.
+ * Best-effort batch publisher that sends to multiple channels in a single
+ * reactive chain.
  *
- * <p>Channels are published sequentially via {@link Flux#concat}.
- * If any publish fails, the error propagates to the subscriber and subsequent publishes
- * in the batch are skipped (fail-fast).  This provides "all-or-nothing" semantics at the
- * application level, though not a true Redis {@code MULTI/EXEC} atomic transaction.
+ * <p>
+ * Channels are published sequentially via {@link Flux#concat}.
+ * If any publish fails, the error propagates to the subscriber and subsequent
+ * publishes
+ * in the batch are skipped (fail-fast). This provides "all-or-nothing"
+ * semantics at the
+ * application level, though not a true Redis {@code MULTI/EXEC} atomic
+ * transaction.
  *
  * <h3>Usage</h3>
+ * 
  * <pre>
  * &#64;Autowired
  * private RacerTransaction racerTransaction;
@@ -33,7 +43,8 @@ import java.util.function.Consumer;
  * </pre>
  *
  * <h3>Return value</h3>
- * {@code Mono<List<Long>>} — one {@code Long} per channel, representing the number of
+ * {@code Mono<List<Long>>} — one {@code Long} per channel, representing the
+ * number of
  * Pub/Sub subscribers that received the message.
  */
 @Slf4j
@@ -44,23 +55,34 @@ public class RacerTransaction {
     @Nullable
     private final RacerPipelinedPublisher pipelinedPublisher;
 
+    /**
+     * Shared default mapper used by the backward-compatible single- and two-arg
+     * constructors. Has {@link JavaTimeModule} registered so that
+     * {@link java.time.Instant}
+     * and other JSR-310 types serialise consistently with the Spring-managed mapper
+     * (#19).
+     */
+    private static final ObjectMapper DEFAULT_MAPPER = new ObjectMapper()
+            .registerModule(new JavaTimeModule())
+            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+
     /** Construct without pipeline support (backward-compatible). */
     public RacerTransaction(RacerPublisherRegistry registry) {
-        this(registry, new ObjectMapper(), null);
+        this(registry, DEFAULT_MAPPER, null);
     }
 
     /** Construct with optional pipeline support (R-9). */
     public RacerTransaction(RacerPublisherRegistry registry,
-                             @Nullable RacerPipelinedPublisher pipelinedPublisher) {
-        this(registry, new ObjectMapper(), pipelinedPublisher);
+            @Nullable RacerPipelinedPublisher pipelinedPublisher) {
+        this(registry, DEFAULT_MAPPER, pipelinedPublisher);
     }
 
     /** Full constructor with explicit ObjectMapper. */
     public RacerTransaction(RacerPublisherRegistry registry,
-                             ObjectMapper objectMapper,
-                             @Nullable RacerPipelinedPublisher pipelinedPublisher) {
-        this.registry           = registry;
-        this.objectMapper       = objectMapper;
+            ObjectMapper objectMapper,
+            @Nullable RacerPipelinedPublisher pipelinedPublisher) {
+        this.registry = registry;
+        this.objectMapper = objectMapper;
         this.pipelinedPublisher = pipelinedPublisher;
     }
 
@@ -77,14 +99,13 @@ public class RacerTransaction {
         TxPublisher tx = new TxPublisher(registry, objectMapper);
         configurer.accept(tx);
         return tx.commit(pipelinedPublisher)
-                .doOnSuccess(results ->
-                        log.debug("[racer-tx] Batch complete — {} channel(s)", results.size()))
-                .doOnError(ex ->
-                        log.error("[racer-tx] Batch publish failed: {}", ex.getMessage()));
+                .doOnSuccess(results -> log.debug("[racer-tx] Batch complete — {} channel(s)", results.size()))
+                .doOnError(ex -> log.error("[racer-tx] Batch publish failed: {}", ex.getMessage()));
     }
 
     /**
-     * Builds and executes a batch publish, explicitly choosing sequential vs pipelined
+     * Builds and executes a batch publish, explicitly choosing sequential vs
+     * pipelined
      * mode regardless of the auto-configuration.
      *
      * @param configurer lambda that registers publish calls
@@ -97,11 +118,9 @@ public class RacerTransaction {
         configurer.accept(tx);
         RacerPipelinedPublisher pub = pipelined ? pipelinedPublisher : null;
         return tx.commit(pub)
-                .doOnSuccess(results ->
-                        log.debug("[racer-tx] Batch complete ({}) — {} channel(s)",
-                                pipelined ? "pipelined" : "sequential", results.size()))
-                .doOnError(ex ->
-                        log.error("[racer-tx] Batch publish failed: {}", ex.getMessage()));
+                .doOnSuccess(results -> log.debug("[racer-tx] Batch complete ({}) — {} channel(s)",
+                        pipelined ? "pipelined" : "sequential", results.size()))
+                .doOnError(ex -> log.error("[racer-tx] Batch publish failed: {}", ex.getMessage()));
     }
 
     // -----------------------------------------------------------------------
@@ -115,7 +134,7 @@ public class RacerTransaction {
         private final List<PublishEntry> entries = new ArrayList<>();
 
         TxPublisher(RacerPublisherRegistry registry, ObjectMapper objectMapper) {
-            this.registry     = registry;
+            this.registry = registry;
             this.objectMapper = objectMapper;
         }
 
@@ -142,8 +161,8 @@ public class RacerTransaction {
                 List<RacerPipelinedPublisher.PipelineItem> items = entries.stream()
                         .map(e -> {
                             String channelName = registry.getPublisher(e.alias()).getChannelName();
-                            String sender      = e.sender() != null ? e.sender() : "racer";
-                            String payloadStr  = serializePayload(e.payload());
+                            String sender = e.sender() != null ? e.sender() : "racer";
+                            String payloadStr = serializePayload(e.payload());
                             return new RacerPipelinedPublisher.PipelineItem(channelName, payloadStr, sender);
                         })
                         .toList();
@@ -159,12 +178,15 @@ public class RacerTransaction {
             return Flux.concat(ops).collectList();
         }
 
-        private record PublishEntry(String alias, Object payload, String sender) {}
+        private record PublishEntry(String alias, Object payload, String sender) {
+        }
 
         /** Serializes non-String payloads to JSON using the configured ObjectMapper. */
         private String serializePayload(Object payload) {
-            if (payload == null) return "null";
-            if (payload instanceof String s) return s;
+            if (payload == null)
+                return "null";
+            if (payload instanceof String s)
+                return s;
             try {
                 return objectMapper.writeValueAsString(payload);
             } catch (Exception ex) {

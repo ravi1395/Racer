@@ -135,9 +135,14 @@ public class RacerPipelinedPublisher {
                 return Flux.fromIterable(ops)
                                 .flatMap(op -> op, ops.size()) // concurrency = all at once — Lettuce pipeline
                                 .collectList()
-                                .doOnSuccess(r -> log.debug("[racer-pipeline] Pipelined {} items across {} channel(s)",
-                                                r.size(),
-                                                items.stream().map(PipelineItem::channelName).distinct().count()))
+                                .doOnSuccess(r -> {
+                                        if (log.isDebugEnabled()) {
+                                                log.debug("[racer-pipeline] Pipelined {} items across {} channel(s)",
+                                                                r.size(),
+                                                                items.stream().map(PipelineItem::channelName).distinct()
+                                                                                .count());
+                                        }
+                                })
                                 .doOnError(ex -> log.error("[racer-pipeline] Pipeline batch failed: {}",
                                                 ex.getMessage()));
         }
@@ -162,10 +167,12 @@ public class RacerPipelinedPublisher {
                                 .map(payload -> {
                                         // schemaMono emits the schema if registered, empty otherwise.
                                         // flatMap is invoked only when schema is present, so the per-payload
-                                        // validateForPublishReactive call runs only for registered channels.
+                                        // validateWithSchemaReactive call runs only for registered channels.
+                                        // validateWithSchemaReactive accepts the already-resolved schema,
+                                        // avoiding a second ConcurrentHashMap lookup per payload (#20).
                                         Mono<Void> validate = schemaRegistry != null
                                                         ? schemaMono.flatMap(schema -> schemaRegistry
-                                                                        .validateForPublishReactive(channelName,
+                                                                        .validateWithSchemaReactive(schema,
                                                                                         payload))
                                                         : Mono.empty();
                                         return validate

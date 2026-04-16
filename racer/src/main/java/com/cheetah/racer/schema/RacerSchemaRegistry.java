@@ -1,17 +1,5 @@
 package com.cheetah.racer.schema;
 
-import com.cheetah.racer.config.RacerProperties;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.networknt.schema.JsonSchema;
-import com.networknt.schema.JsonSchemaFactory;
-import com.networknt.schema.SpecVersion;
-import com.networknt.schema.ValidationMessage;
-import jakarta.annotation.PostConstruct;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.core.io.Resource;
-import org.springframework.core.io.ResourceLoader;
-
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -20,14 +8,32 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.springframework.core.io.Resource;
+import org.springframework.core.io.ResourceLoader;
+
+import com.cheetah.racer.config.RacerProperties;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.networknt.schema.JsonSchema;
+import com.networknt.schema.JsonSchemaFactory;
+import com.networknt.schema.SpecVersion;
+import com.networknt.schema.ValidationMessage;
+
+import jakarta.annotation.PostConstruct;
+import lombok.extern.slf4j.Slf4j;
+
 /**
  * Central schema registry for Racer (R-7 — Schema Validation).
  *
- * <p>Activated only when {@code racer.schema.enabled=true}. Loads JSON Schema definitions
- * from the properties config, then exposes validation methods consumed by publishers and
+ * <p>
+ * Activated only when {@code racer.schema.enabled=true}. Loads JSON Schema
+ * definitions
+ * from the properties config, then exposes validation methods consumed by
+ * publishers and
  * consumers.
  *
  * <h3>Schema registration (application.properties)</h3>
+ * 
  * <pre>
  * racer.schema.enabled=true
  * racer.schema.validation-mode=BOTH        # PUBLISH | CONSUME | BOTH
@@ -44,24 +50,29 @@ import java.util.concurrent.ConcurrentHashMap;
  * </pre>
  *
  * <h3>What is validated</h3>
- * The {@code payload} field inside each {@link com.cheetah.racer.model.RacerMessage}
- * envelope is validated — not the outer envelope itself. When the payload is a plain String
- * it is treated as a JSON string and parsed before validation. POJOs are serialized to JSON
+ * The {@code payload} field inside each
+ * {@link com.cheetah.racer.model.RacerMessage}
+ * envelope is validated — not the outer envelope itself. When the payload is a
+ * plain String
+ * it is treated as a JSON string and parsed before validation. POJOs are
+ * serialized to JSON
  * first via Jackson.
  *
  * <h3>Violation handling</h3>
  * <ul>
- *   <li>{@code fail-on-violation=true} (default) — throws {@link SchemaValidationException},
- *       blocking the publish or triggering DLQ on the consume side.</li>
- *   <li>{@code fail-on-violation=false} — logs violations as {@code WARN} and continues.</li>
+ * <li>{@code fail-on-violation=true} (default) — throws
+ * {@link SchemaValidationException},
+ * blocking the publish or triggering DLQ on the consume side.</li>
+ * <li>{@code fail-on-violation=false} — logs violations as {@code WARN} and
+ * continues.</li>
  * </ul>
  */
 @Slf4j
 public class RacerSchemaRegistry {
 
     private final RacerProperties properties;
-    private final ResourceLoader  resourceLoader;
-    private final ObjectMapper    objectMapper;
+    private final ResourceLoader resourceLoader;
+    private final ObjectMapper objectMapper;
 
     /** channel-name (or alias) → compiled JsonSchema */
     private final Map<String, JsonSchema> schemaMap = new ConcurrentHashMap<>();
@@ -69,18 +80,19 @@ public class RacerSchemaRegistry {
     /** alias/key → definition (for the API layer) */
     private final Map<String, RacerProperties.SchemaDefinition> definitions = new LinkedHashMap<>();
 
-    /** Maps alias → resolved Redis channel name (populated from racer.channels.*) */
+    /**
+     * Maps alias → resolved Redis channel name (populated from racer.channels.*)
+     */
     private final Map<String, String> aliasToChannel = new ConcurrentHashMap<>();
 
-    private static final JsonSchemaFactory FACTORY =
-            JsonSchemaFactory.getInstance(SpecVersion.VersionFlag.V7);
+    private static final JsonSchemaFactory FACTORY = JsonSchemaFactory.getInstance(SpecVersion.VersionFlag.V7);
 
     public RacerSchemaRegistry(RacerProperties properties,
-                                ResourceLoader resourceLoader,
-                                ObjectMapper objectMapper) {
-        this.properties    = properties;
+            ResourceLoader resourceLoader,
+            ObjectMapper objectMapper) {
+        this.properties = properties;
         this.resourceLoader = resourceLoader;
-        this.objectMapper  = objectMapper;
+        this.objectMapper = objectMapper;
     }
 
     @PostConstruct
@@ -93,10 +105,10 @@ public class RacerSchemaRegistry {
         });
 
         int loaded = 0;
-        for (Map.Entry<String, RacerProperties.SchemaDefinition> entry :
-                properties.getSchema().getSchemas().entrySet()) {
+        for (Map.Entry<String, RacerProperties.SchemaDefinition> entry : properties.getSchema().getSchemas()
+                .entrySet()) {
 
-            String key = entry.getKey();   // alias or literal channel name
+            String key = entry.getKey(); // alias or literal channel name
             RacerProperties.SchemaDefinition def = entry.getValue();
 
             try {
@@ -127,20 +139,23 @@ public class RacerSchemaRegistry {
     // -------------------------------------------------------------------------
 
     /**
-     * Validates {@code payload} against the schema registered for {@code channelName} on
+     * Validates {@code payload} against the schema registered for
+     * {@code channelName} on
      * the <b>publish</b> path.
      *
-     * <p>No-ops when:
+     * <p>
+     * No-ops when:
      * <ul>
-     *   <li>No schema is registered for the channel.</li>
-     *   <li>{@code validation-mode} is {@link RacerProperties.SchemaValidationMode#CONSUME}.</li>
+     * <li>No schema is registered for the channel.</li>
+     * <li>{@code validation-mode} is
+     * {@link RacerProperties.SchemaValidationMode#CONSUME}.</li>
      * </ul>
      *
-     * @throws SchemaValidationException if violations are found and {@code fail-on-violation=true}
+     * @throws SchemaValidationException if violations are found and
+     *                                   {@code fail-on-violation=true}
      */
     public void validateForPublish(String channelName, Object payload) {
-        if (properties.getSchema().getValidationMode() ==
-                RacerProperties.SchemaValidationMode.CONSUME) {
+        if (properties.getSchema().getValidationMode() == RacerProperties.SchemaValidationMode.CONSUME) {
             return;
         }
         validate(channelName, payload, "publish");
@@ -161,21 +176,46 @@ public class RacerSchemaRegistry {
     }
 
     /**
-     * Validates {@code payload} against the schema registered for {@code channelName} on
+     * Validates {@code payload} against an already-resolved {@link JsonSchema},
+     * skipping the internal registry lookup.
+     *
+     * <p>
+     * Intended for callers (e.g.
+     * {@link com.cheetah.racer.publisher.RacerPipelinedPublisher})
+     * that have resolved the schema once per batch and want per-payload validation
+     * without a redundant {@link java.util.concurrent.ConcurrentHashMap} lookup
+     * (#20).
+     *
+     * @param schema  the pre-resolved schema (must not be {@code null})
+     * @param payload the payload to validate
+     * @return a {@code Mono<Void>} that completes empty on success or errors with
+     *         {@link SchemaValidationException}
+     */
+    public reactor.core.publisher.Mono<Void> validateWithSchemaReactive(JsonSchema schema, Object payload) {
+        if (properties.getSchema().getValidationMode() == RacerProperties.SchemaValidationMode.CONSUME) {
+            return reactor.core.publisher.Mono.empty();
+        }
+        return reactor.core.publisher.Mono.fromRunnable(() -> performValidation(schema, null, payload, "publish"));
+    }
+
+    /**
+     * Validates {@code payload} against the schema registered for
+     * {@code channelName} on
      * the <b>consume</b> path.
      *
-     * @throws SchemaValidationException if violations are found and {@code fail-on-violation=true}
+     * @throws SchemaValidationException if violations are found and
+     *                                   {@code fail-on-violation=true}
      */
     public void validateForConsume(String channelName, Object payload) {
-        if (properties.getSchema().getValidationMode() ==
-                RacerProperties.SchemaValidationMode.PUBLISH) {
+        if (properties.getSchema().getValidationMode() == RacerProperties.SchemaValidationMode.PUBLISH) {
             return;
         }
         validate(channelName, payload, "consume");
     }
 
     /**
-     * Returns {@code true} if a schema is registered for the given channel name or alias.
+     * Returns {@code true} if a schema is registered for the given channel name or
+     * alias.
      */
     public boolean hasSchema(String channelName) {
         return schemaMap.containsKey(channelName);
@@ -185,7 +225,8 @@ public class RacerSchemaRegistry {
      * Returns the compiled {@link JsonSchema} for the given channel name or alias,
      * or {@code null} if no schema is registered for that channel.
      *
-     * <p>Intended for callers that need to cache the schema object once per batch
+     * <p>
+     * Intended for callers that need to cache the schema object once per batch
      * (e.g. {@link com.cheetah.racer.publisher.RacerPipelinedPublisher}) and then
      * validate each payload against the same schema instance, avoiding repeated
      * {@link java.util.concurrent.ConcurrentHashMap} lookups.
@@ -212,7 +253,8 @@ public class RacerSchemaRegistry {
      */
     public String getSchemaJson(String key) {
         JsonSchema schema = schemaMap.get(key);
-        if (schema == null) return null;
+        if (schema == null)
+            return null;
         try {
             return objectMapper.writeValueAsString(schema.getSchemaNode());
         } catch (Exception e) {
@@ -229,8 +271,7 @@ public class RacerSchemaRegistry {
             return List.of();
         }
         try {
-            String json = toJsonString(payload);
-            JsonNode node = objectMapper.readTree(json);
+            JsonNode node = toJsonNode(payload);
             Set<ValidationMessage> messages = schema.validate(node);
             return messages.stream()
                     .map(m -> new SchemaViolation(
@@ -252,10 +293,32 @@ public class RacerSchemaRegistry {
         if (schema == null) {
             return; // no schema registered — pass-through
         }
+        performValidation(schema, channelName, payload, direction);
+    }
+
+    /**
+     * Runs validation against an already-resolved {@link JsonSchema}.
+     * Extracted so that {@link #validate(String, Object, String)} and
+     * {@link #validateWithSchemaReactive(JsonSchema, Object)} share the same logic
+     * without duplicating the internal registry lookup.
+     *
+     * <p>
+     * Uses {@link #toJsonNode(Object)} instead of
+     * {@code toJsonString} + {@code objectMapper.readTree()} to avoid
+     * a redundant serialize-then-parse round-trip for POJO payloads (#18).
+     *
+     * @param schema      the already-resolved schema (non-null)
+     * @param channelName channel name for log/exception messages; may be
+     *                    {@code null}
+     *                    when called from {@link #validateWithSchemaReactive}
+     * @param payload     the payload to validate
+     * @param direction   {@code "publish"} or {@code "consume"} — for logging
+     */
+    private void performValidation(JsonSchema schema, @org.springframework.lang.Nullable String channelName,
+            Object payload, String direction) {
         List<SchemaViolation> violations = new ArrayList<>();
         try {
-            String json   = toJsonString(payload);
-            JsonNode node = objectMapper.readTree(json);
+            JsonNode node = toJsonNode(payload);
             Set<ValidationMessage> messages = schema.validate(node);
             messages.stream()
                     .map(m -> new SchemaViolation(
@@ -304,22 +367,39 @@ public class RacerSchemaRegistry {
         }
     }
 
-    private String toJsonString(Object payload) throws Exception {
-        if (payload == null) return "null";
+    /**
+     * Converts {@code payload} to a {@link JsonNode} for schema validation.
+     *
+     * <p>
+     * For POJO payloads, uses {@link ObjectMapper#valueToTree(Object)} which
+     * produces a {@code JsonNode} directly without going through a JSON string
+     * intermediate — eliminating the serialize-then-parse double-pass (#18).
+     * For String payloads, attempts to parse as JSON, falling back to a JSON
+     * string literal if the value is not valid JSON.
+     *
+     * @param payload the payload to convert; {@code null} returns a JSON null node
+     * @return a {@link JsonNode} representation suitable for schema validation
+     */
+    private JsonNode toJsonNode(Object payload) throws Exception {
+        if (payload == null) {
+            return objectMapper.nullNode();
+        }
         if (payload instanceof String s) {
-            // Verify it's valid JSON; if not, wrap as a JSON string value
+            // For String payloads: if it's valid JSON, parse it directly;
+            // otherwise wrap it as a JSON string value.
             try {
-                objectMapper.readTree(s);
-                return s;
+                return objectMapper.readTree(s);
             } catch (Exception e) {
-                return objectMapper.writeValueAsString(s);
+                return objectMapper.readTree(objectMapper.writeValueAsString(s));
             }
         }
-        return objectMapper.writeValueAsString(payload);
+        // For POJOs: valueToTree avoids serializing to String then re-parsing.
+        return objectMapper.valueToTree(payload);
     }
 
     private static String extractType(String fullType) {
-        if (fullType == null) return "unknown";
+        if (fullType == null)
+            return "unknown";
         int hash = fullType.lastIndexOf('#');
         return hash >= 0 ? fullType.substring(hash + 1) : fullType;
     }

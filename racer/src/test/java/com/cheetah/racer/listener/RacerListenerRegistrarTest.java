@@ -278,6 +278,11 @@ class RacerListenerRegistrarTest {
     @Test
     void concurrentListener_processesMultipleMessagesInParallel() throws Exception {
         int messageCount = 8;
+        // workersAtGate: released once at least 2 workers have incremented concurrent
+        // and are waiting at the startLatch.  This ensures the main thread never
+        // opens the gate before any workers are actually blocked there, which would
+        // cause all handlers to complete instantly and never overlap.
+        CountDownLatch workersAtGate = new CountDownLatch(2);
         CountDownLatch startLatch = new CountDownLatch(1);
         CountDownLatch allDispatched = new CountDownLatch(messageCount);
         AtomicInteger concurrent = new AtomicInteger(0);
@@ -289,6 +294,7 @@ class RacerListenerRegistrarTest {
             public void onMsg(RacerMessage msg) throws InterruptedException {
                 int c = concurrent.incrementAndGet();
                 maxConcurrent.updateAndGet(prev -> Math.max(prev, c));
+                workersAtGate.countDown(); // signal that this worker is waiting at the gate
                 startLatch.await(2, TimeUnit.SECONDS);
                 concurrent.decrementAndGet();
                 allDispatched.countDown();
@@ -307,7 +313,11 @@ class RacerListenerRegistrarTest {
             sink.tryEmitNext(mockRedisMessage(objectMapper.writeValueAsString(msg)));
         }
 
-        // Release the latch so all workers can finish
+        // Wait for at least 2 workers to reach the gate before releasing, so that
+        // maxConcurrent is recorded while they are both inside the handler.
+        boolean gateReached = workersAtGate.await(5, TimeUnit.SECONDS);
+        assertThat(gateReached).as("At least 2 workers should reach the gate within 5 s").isTrue();
+
         startLatch.countDown();
         boolean allDone = allDispatched.await(5, TimeUnit.SECONDS);
 

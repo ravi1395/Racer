@@ -1,32 +1,5 @@
 package com.cheetah.racer.requestreply;
 
-import com.cheetah.racer.annotation.ConcurrencyMode;
-import com.cheetah.racer.annotation.RacerResponder;
-import com.cheetah.racer.config.RacerProperties;
-import com.cheetah.racer.model.RacerReply;
-import com.cheetah.racer.model.RacerRequest;
-import com.cheetah.racer.stream.RacerStreamUtils;
-import com.cheetah.racer.util.RacerChannelResolver;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.annotation.PreDestroy;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.aop.framework.AopProxyUtils;
-import org.springframework.beans.BeansException;
-import org.springframework.beans.factory.config.BeanPostProcessor;
-import org.springframework.context.EnvironmentAware;
-import org.springframework.core.env.Environment;
-import org.springframework.data.redis.connection.stream.*;
-import org.springframework.data.redis.core.ReactiveRedisTemplate;
-import org.springframework.data.redis.listener.ChannelTopic;
-import org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;
-import org.springframework.lang.NonNull;
-import org.springframework.lang.Nullable;
-import reactor.core.Disposable;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
-import reactor.util.retry.Retry;
-
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -35,25 +8,69 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.springframework.aop.framework.AopProxyUtils;
+import org.springframework.beans.BeansException;
+import org.springframework.beans.factory.config.BeanPostProcessor;
+import org.springframework.context.EnvironmentAware;
+import org.springframework.core.env.Environment;
+import org.springframework.data.redis.connection.stream.Consumer;
+import org.springframework.data.redis.connection.stream.MapRecord;
+import org.springframework.data.redis.connection.stream.ReadOffset;
+import org.springframework.data.redis.connection.stream.RecordId;
+import org.springframework.data.redis.connection.stream.StreamOffset;
+import org.springframework.data.redis.connection.stream.StreamReadOptions;
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
+import org.springframework.data.redis.listener.ChannelTopic;
+import org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;
+import org.springframework.lang.NonNull;
+import org.springframework.lang.Nullable;
+
+import com.cheetah.racer.annotation.ConcurrencyMode;
+import com.cheetah.racer.annotation.RacerResponder;
+import com.cheetah.racer.config.RacerProperties;
+import com.cheetah.racer.model.RacerReply;
+import com.cheetah.racer.model.RacerRequest;
+import com.cheetah.racer.stream.RacerStreamUtils;
+import com.cheetah.racer.util.RacerChannelResolver;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import jakarta.annotation.PreDestroy;
+import lombok.extern.slf4j.Slf4j;
+import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+import reactor.util.retry.Retry;
+
 /**
- * {@link BeanPostProcessor} that discovers methods annotated with {@link RacerResponder}
- * and wires them up as request-reply handlers for either Redis Pub/Sub or Redis Streams.
+ * {@link BeanPostProcessor} that discovers methods annotated with
+ * {@link RacerResponder}
+ * and wires them up as request-reply handlers for either Redis Pub/Sub or Redis
+ * Streams.
  *
  * <h3>Pub/Sub path</h3>
- * Subscribes to the configured channel via the listener container. Incoming messages are
- * tentatively deserialized as {@link RacerRequest}. If the message has a non-blank
- * {@code replyTo} field, it is treated as a request; the annotated method is invoked
- * and the result is published to the {@code replyTo} channel as a {@link RacerReply}.
+ * Subscribes to the configured channel via the listener container. Incoming
+ * messages are
+ * tentatively deserialized as {@link RacerRequest}. If the message has a
+ * non-blank
+ * {@code replyTo} field, it is treated as a request; the annotated method is
+ * invoked
+ * and the result is published to the {@code replyTo} channel as a
+ * {@link RacerReply}.
  * Fire-and-forget messages (no {@code replyTo}) are silently ignored.
  *
  * <h3>Stream path</h3>
- * Creates a consumer group on the configured stream, polls via {@code XREADGROUP},
- * invokes the method, writes the reply to the ephemeral response stream specified in
+ * Creates a consumer group on the configured stream, polls via
+ * {@code XREADGROUP},
+ * invokes the method, writes the reply to the ephemeral response stream
+ * specified in
  * the request's {@code replyTo} field, then ACKs the entry.
  *
  * <h3>Error handling</h3>
- * Exceptions thrown by the annotated method result in a {@link RacerReply#failure} reply
- * (rather than dropping the request silently), giving callers actionable error information.
+ * Exceptions thrown by the annotated method result in a
+ * {@link RacerReply#failure} reply
+ * (rather than dropping the request silently), giving callers actionable error
+ * information.
  *
  * @see RacerResponder
  * @see RacerRequest
@@ -63,18 +80,19 @@ import java.util.concurrent.atomic.AtomicLong;
 public class RacerResponderRegistrar implements BeanPostProcessor, EnvironmentAware {
 
     private static final String CONSUMER_GROUP = "racer-responder-group";
-    private static final int    GROUP_CREATION_RETRIES = 5;
+    private static final int GROUP_CREATION_RETRIES = 5;
 
-    @Nullable private final ReactiveRedisMessageListenerContainer listenerContainer;
+    @Nullable
+    private final ReactiveRedisMessageListenerContainer listenerContainer;
     private final ReactiveRedisTemplate<String, String> redisTemplate;
     private final ObjectMapper objectMapper;
     private final RacerProperties racerProperties;
 
     private Environment environment;
 
-    private final List<Disposable>          subscriptions  = new ArrayList<>();
-    private final Map<String, AtomicLong>   repliedCounts  = new ConcurrentHashMap<>();
-    private final Map<String, AtomicLong>   failedCounts   = new ConcurrentHashMap<>();
+    private final List<Disposable> subscriptions = new ArrayList<>();
+    private final Map<String, AtomicLong> repliedCounts = new ConcurrentHashMap<>();
+    private final Map<String, AtomicLong> failedCounts = new ConcurrentHashMap<>();
 
     public RacerResponderRegistrar(
             @Nullable ReactiveRedisMessageListenerContainer listenerContainer,
@@ -82,9 +100,9 @@ public class RacerResponderRegistrar implements BeanPostProcessor, EnvironmentAw
             ObjectMapper objectMapper,
             RacerProperties racerProperties) {
         this.listenerContainer = listenerContainer;
-        this.redisTemplate     = redisTemplate;
-        this.objectMapper      = objectMapper;
-        this.racerProperties   = racerProperties;
+        this.redisTemplate = redisTemplate;
+        this.objectMapper = objectMapper;
+        this.racerProperties = racerProperties;
     }
 
     @Override
@@ -108,23 +126,25 @@ public class RacerResponderRegistrar implements BeanPostProcessor, EnvironmentAw
     public void stop() {
         int disposed = 0;
         for (Disposable d : subscriptions) {
-            if (!d.isDisposed()) { d.dispose(); disposed++; }
+            if (!d.isDisposed()) {
+                d.dispose();
+                disposed++;
+            }
         }
         log.info("[RACER-RESPONDER] Stopped {} subscription(s).", disposed);
-        repliedCounts.forEach((id, cnt) ->
-                log.info("[RACER-RESPONDER] Responder '{}': replied={} failed={}",
-                        id, cnt.get(), failedCounts.getOrDefault(id, new AtomicLong()).get()));
+        repliedCounts.forEach((id, cnt) -> log.info("[RACER-RESPONDER] Responder '{}': replied={} failed={}",
+                id, cnt.get(), failedCounts.getOrDefault(id, new AtomicLong()).get()));
     }
 
     // ── Registration ─────────────────────────────────────────────────────────
 
     private void registerResponder(Object bean, Method method, RacerResponder ann, String beanName) {
-        String rawId      = ann.id().isEmpty() ? "" : resolve(ann.id());
+        String rawId = ann.id().isEmpty() ? "" : resolve(ann.id());
         String responderId = rawId.isEmpty() ? beanName + "." + method.getName() : rawId;
 
         method.setAccessible(true);
         repliedCounts.put(responderId, new AtomicLong(0));
-        failedCounts.put(responderId,  new AtomicLong(0));
+        failedCounts.put(responderId, new AtomicLong(0));
 
         boolean hasPubSub = !ann.channel().isEmpty() || !ann.channelRef().isEmpty();
         boolean hasStream = !ann.stream().isEmpty() || !ann.streamRef().isEmpty();
@@ -144,11 +164,14 @@ public class RacerResponderRegistrar implements BeanPostProcessor, EnvironmentAw
     private void registerPubSubResponder(Object bean, Method method, RacerResponder ann, String responderId) {
         var container = this.listenerContainer;
         if (container == null) {
-            log.warn("[RACER-RESPONDER] '{}' uses Pub/Sub mode but no ReactiveRedisMessageListenerContainer is available — skipped.", responderId);
+            log.warn(
+                    "[RACER-RESPONDER] '{}' uses Pub/Sub mode but no ReactiveRedisMessageListenerContainer is available — skipped.",
+                    responderId);
             return;
         }
 
-        String channel = RacerChannelResolver.resolveChannel(resolve(ann.channel()), resolve(ann.channelRef()), racerProperties);
+        String channel = RacerChannelResolver.resolveChannel(resolve(ann.channel()), resolve(ann.channelRef()),
+                racerProperties);
         int effectiveConcurrency = ann.mode() == ConcurrencyMode.SEQUENTIAL ? 1 : Math.max(1, ann.concurrency());
 
         log.info("[RACER-RESPONDER] Registering Pub/Sub responder '{}' <- channel '{}'", responderId, channel);
@@ -160,8 +183,10 @@ public class RacerResponderRegistrar implements BeanPostProcessor, EnvironmentAw
                         msg -> handlePubSubMessage(bean, method, msg.getMessage(), responderId),
                         effectiveConcurrency)
                 .subscribe(
-                        v  -> {},
-                        ex -> log.error("[RACER-RESPONDER] Fatal subscription error on '{}': {}", responderId, ex.getMessage(), ex));
+                        v -> {
+                        },
+                        ex -> log.error("[RACER-RESPONDER] Fatal subscription error on '{}': {}", responderId,
+                                ex.getMessage(), ex));
         subscriptions.add(sub);
     }
 
@@ -200,41 +225,63 @@ public class RacerResponderRegistrar implements BeanPostProcessor, EnvironmentAw
     // ── Stream responder ──────────────────────────────────────────────────────
 
     private void registerStreamResponder(Object bean, Method method, RacerResponder ann, String responderId) {
-        String streamKey = RacerChannelResolver.resolveStreamKey(resolve(ann.stream()), resolve(ann.streamRef()), racerProperties);
-        String group     = ann.group();
+        String streamKey = RacerChannelResolver.resolveStreamKey(resolve(ann.stream()), resolve(ann.streamRef()),
+                racerProperties);
+        String group = ann.group();
         int concurrencyN = ann.mode() == ConcurrencyMode.SEQUENTIAL ? 1 : Math.max(1, ann.concurrency());
 
-        log.info("[RACER-RESPONDER] Registering Stream responder '{}' <- stream '{}' group='{}'", responderId, streamKey, group);
+        log.info("[RACER-RESPONDER] Registering Stream responder '{}' <- stream '{}' group='{}'", responderId,
+                streamKey, group);
 
         RacerStreamUtils.ensureGroup(redisTemplate, streamKey, group)
                 .retryWhen(Retry.backoff(GROUP_CREATION_RETRIES, Duration.ofSeconds(2))
-                        .doBeforeRetry(rs -> log.warn("[RACER-RESPONDER] Retrying group creation on '{}' (attempt {})", streamKey, rs.totalRetries() + 1)))
+                        .doBeforeRetry(rs -> log.warn("[RACER-RESPONDER] Retrying group creation on '{}' (attempt {})",
+                                streamKey, rs.totalRetries() + 1)))
                 .doOnSuccess(v -> {
                     for (int i = 0; i < concurrencyN; i++) {
                         String consumerName = responderId + "-" + i;
                         Disposable d = buildStreamPollLoop(bean, method, streamKey, group, consumerName, responderId)
                                 .subscribe(
-                                        n -> {},
-                                        ex -> log.error("[RACER-RESPONDER] Stream consumer '{}' errored: {}", consumerName, ex.getMessage()));
+                                        n -> {
+                                        },
+                                        ex -> log.error("[RACER-RESPONDER] Stream consumer '{}' errored: {}",
+                                                consumerName, ex.getMessage()));
                         subscriptions.add(d);
                     }
                 })
-                .doOnError(e -> log.error("[RACER-RESPONDER] Failed to init group '{}' on '{}': {}", group, streamKey, e.getMessage()))
+                .doOnError(e -> log.error("[RACER-RESPONDER] Failed to init group '{}' on '{}': {}", group, streamKey,
+                        e.getMessage()))
                 .subscribe();
     }
 
     private Flux<Void> buildStreamPollLoop(Object bean, Method method,
-                                            String streamKey, String group, String consumer, String responderId) {
+            String streamKey, String group, String consumer, String responderId) {
         return Flux.defer(() -> pollStreamOnce(bean, method, streamKey, group, consumer, responderId))
-                .repeatWhen(c -> c.delayElements(Duration.ofMillis(100)))
-                .onErrorContinue((ex, o) ->
-                        log.error("[RACER-RESPONDER] Poll error on '{}': {}", streamKey, ex.getMessage()));
+                .repeatWhen(completed -> completed.flatMap(v -> {
+                    // When blocking reads are enabled the Redis BLOCK duration already
+                    // provides the idle wait; repeat immediately to start the next
+                    // blocking read without adding an extra delay (#3).
+                    if (racerProperties.getConsumer().getBlockMillis() > 0) {
+                        return Mono.just(v);
+                    }
+                    // Non-blocking mode: sleep between polls to avoid busy-spin.
+                    return Mono.delay(Duration.ofMillis(racerProperties.getConsumer().getPollIntervalMs()));
+                }))
+                .onErrorContinue(
+                        (ex, o) -> log.error("[RACER-RESPONDER] Poll error on '{}': {}", streamKey, ex.getMessage()));
     }
 
-    @SuppressWarnings({"unchecked", "null"})
+    @SuppressWarnings({ "unchecked", "null" })
     private Flux<Void> pollStreamOnce(Object bean, Method method,
-                                       String streamKey, String group, String consumer, String responderId) {
-        StreamReadOptions opts = StreamReadOptions.empty().count(1);
+            String streamKey, String group, String consumer, String responderId) {
+        // Use the configured batch size to amortise Redis round-trip cost (#3),
+        // and enable XREADGROUP BLOCK when blockMillis > 0 so the consumer wakes
+        // instantly when a new request arrives instead of busy-polling.
+        long blockMs = racerProperties.getConsumer().getBlockMillis();
+        int batchSize = racerProperties.getConsumer().getPollBatchSize();
+        StreamReadOptions opts = blockMs > 0
+                ? StreamReadOptions.empty().count(batchSize).block(Duration.ofMillis(blockMs))
+                : StreamReadOptions.empty().count(batchSize);
         StreamOffset<String> offset = StreamOffset.create(streamKey, ReadOffset.lastConsumed());
         Consumer redisConsumer = Consumer.from(group, consumer);
 
@@ -249,13 +296,13 @@ public class RacerResponderRegistrar implements BeanPostProcessor, EnvironmentAw
     }
 
     private Mono<Void> processStreamRecord(Object bean, Method method,
-                                            MapRecord<String, Object, Object> record, String responderId) {
+            MapRecord<String, Object, Object> record, String responderId) {
         RecordId recordId = record.getId();
         Map<Object, Object> fields = record.getValue();
 
         Object correlationIdObj = fields.get("correlationId");
-        Object replyToObj       = fields.get("replyTo");
-        Object payloadObj       = fields.get("payload");
+        Object replyToObj = fields.get("replyTo");
+        Object payloadObj = fields.get("payload");
 
         if (correlationIdObj == null || replyToObj == null) {
             log.warn("[RACER-RESPONDER] Stream record {} missing correlationId/replyTo — skipping", recordId);
@@ -265,12 +312,14 @@ public class RacerResponderRegistrar implements BeanPostProcessor, EnvironmentAw
         RacerRequest request = new RacerRequest();
         request.setCorrelationId(correlationIdObj.toString());
         request.setReplyTo(replyToObj.toString());
-        if (payloadObj != null) request.setPayload(payloadObj.toString());
+        if (payloadObj != null)
+            request.setPayload(payloadObj.toString());
 
         return invokeAndReply(bean, method, request, responderId)
                 .flatMap(reply -> writeStreamReply(request.getReplyTo(), reply))
                 .then(RacerStreamUtils.ackRecord(redisTemplate, record.getStream(), CONSUMER_GROUP, recordId))
-                .doOnError(ex -> log.error("[RACER-RESPONDER] Stream record {} processing failed: {}", recordId, ex.getMessage()));
+                .doOnError(ex -> log.error("[RACER-RESPONDER] Stream record {} processing failed: {}", recordId,
+                        ex.getMessage()));
     }
 
     @SuppressWarnings("null")
@@ -297,16 +346,17 @@ public class RacerResponderRegistrar implements BeanPostProcessor, EnvironmentAw
         }
 
         final Object resolvedArg = arg;
-        final boolean isNoArg    = method.getParameterCount() == 0;
+        final boolean isNoArg = method.getParameterCount() == 0;
 
         Mono<Object> invocation = Mono
                 .fromCallable(() -> isNoArg ? method.invoke(bean) : method.invoke(bean, resolvedArg))
                 .subscribeOn(Schedulers.boundedElastic());
 
-        @SuppressWarnings({"unchecked", "null"})
+        @SuppressWarnings({ "unchecked", "null" })
         Mono<RacerReply> result0 = invocation
                 .flatMap(result -> {
-                    if (result instanceof Mono<?> mono) return (Mono<Object>) mono;
+                    if (result instanceof Mono<?> mono)
+                        return (Mono<Object>) mono;
                     return Mono.justOrEmpty(result);
                 })
                 .map(value -> {
@@ -332,16 +382,25 @@ public class RacerResponderRegistrar implements BeanPostProcessor, EnvironmentAw
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private Object resolveArgument(Method method, RacerRequest request) throws Exception {
-        if (method.getParameterCount() == 0) return null;
+        if (method.getParameterCount() == 0)
+            return null;
         Class<?> paramType = method.getParameterTypes()[0];
-        if (RacerRequest.class.isAssignableFrom(paramType)) return request;
-        if (String.class.equals(paramType)) return request.getPayload();
-        if (request.getPayload() == null || request.getPayload().isBlank()) return null;
+        if (RacerRequest.class.isAssignableFrom(paramType))
+            return request;
+        if (String.class.equals(paramType))
+            return request.getPayload();
+        if (request.getPayload() == null || request.getPayload().isBlank())
+            return null;
         return objectMapper.readValue(request.getPayload(), paramType);
     }
 
     private String resolve(String value) {
-        if (value == null || value.isEmpty()) return value == null ? "" : value;
-        try { return environment.resolvePlaceholders(value); } catch (Exception e) { return value; }
+        if (value == null || value.isEmpty())
+            return value == null ? "" : value;
+        try {
+            return environment.resolvePlaceholders(value);
+        } catch (Exception e) {
+            return value;
+        }
     }
 }

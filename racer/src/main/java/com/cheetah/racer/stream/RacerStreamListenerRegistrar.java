@@ -121,14 +121,20 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
     /**
      * Metadata captured at stream listener registration time.
      *
-     * @param bean         the Spring bean that owns the handler method
-     * @param method       the {@code @RacerStreamListener}-annotated method
-     * @param streamKey    the resolved Redis stream key
-     * @param group        the consumer group name
-     * @param dedupEnabled whether deduplication is active for this listener
+     * @param bean             the Spring bean that owns the handler method
+     * @param method           the {@code @RacerStreamListener}-annotated method
+     * @param streamKey        the resolved Redis stream key
+     * @param group            the consumer group name
+     * @param dedupEnabled     whether deduplication is active for this listener
+     * @param primaryParamType first non-RacerMessage parameter type; {@code null}
+     *                         for no-arg or RacerMessage/String handlers
+     * @param payloadReader    pre-compiled Jackson reader for the payload type;
+     *                         {@code null} when not applicable (#8)
      */
     public record StreamListenerRegistration(Object bean, Method method, String streamKey,
-            String group, boolean dedupEnabled) {
+            String group, boolean dedupEnabled,
+            @Nullable Class<?> primaryParamType,
+            @Nullable com.fasterxml.jackson.databind.ObjectReader payloadReader) {
     }
 
     /**
@@ -315,8 +321,24 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
 
         // Store registration so RacerTestHarness can inject messages directly into
         // the processing pipeline without going through Redis Streams.
+        // Pre-compile the ObjectReader and cache the primary parameter type (#8)
+        // so that the dispatch hot path never pays for per-message type resolution.
+        Class<?> primaryParamType = null;
+        com.fasterxml.jackson.databind.ObjectReader payloadReader = null;
+        if (method.getParameterCount() > 0) {
+            Class<?> pType = method.getParameterTypes()[0];
+            if (!RacerMessage.class.isAssignableFrom(pType) && !String.class.equals(pType)) {
+                primaryParamType = pType;
+                com.fasterxml.jackson.databind.JavaType javaType = objectMapper
+                        .constructType(method.getGenericParameterTypes()[0]);
+                payloadReader = objectMapper.readerFor(javaType);
+            } else {
+                primaryParamType = pType;
+            }
+        }
         streamListenerRegistrations.put(listenerId,
-                new StreamListenerRegistration(bean, method, streamKey, group, dedupEnabled));
+                new StreamListenerRegistration(bean, method, streamKey, group, dedupEnabled,
+                        primaryParamType, payloadReader));
 
         log.info(
                 "[RACER-STREAM-LISTENER] Registering {}.{}() <- stream '{}' group='{}' mode={} concurrency={} dedup={}",
@@ -417,8 +439,6 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
         Map<Object, Object> fields = record.getValue();
 
         // The data field carries the serialized RacerMessage envelope.
-        // Parsed first so the message is available for DLQ routing in the CB gate
-        // below.
         Object raw = fields.get(DEFAULT_DATA_FIELD);
         if (raw == null) {
             log.warn("[RACER-STREAM-LISTENER] Record {} on '{}' missing '{}' field — skipped", recordId, streamKey,
@@ -426,46 +446,50 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
             return RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, recordId);
         }
 
+        // Offload envelope deserialization from the Lettuce I/O thread to
+        // boundedElastic (#4) — avoids blocking the shared I/O thread pool.
         String envelopeJson = raw.toString();
-        RacerMessage message;
-        try {
-            message = objectMapper.readValue(envelopeJson, RacerMessage.class);
-        } catch (Exception e) {
-            log.error("[RACER-STREAM-LISTENER] '{}' — failed to deserialize entry {}: {}", listenerId, recordId,
-                    e.getMessage());
-            incrementFailed(listenerId);
-            return RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, recordId);
-        }
+        return Mono.fromCallable(() -> objectMapper.readValue(envelopeJson, RacerMessage.class))
+                .subscribeOn(Schedulers.boundedElastic())
+                .onErrorResume(Exception.class, e -> {
+                    log.error("[RACER-STREAM-LISTENER] '{}' — failed to deserialize entry {}: {}", listenerId,
+                            recordId, e.getMessage());
+                    incrementFailed(listenerId);
+                    return RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, recordId)
+                            .then(Mono.empty());
+                })
+                .flatMap(message -> {
+                    // 0a. Circuit breaker gate — checked after parsing so the rejected message can
+                    // be forwarded to the DLQ, providing a recovery path and failure visibility
+                    // consistent with the Pub/Sub pipeline behaviour.
+                    RacerCircuitBreaker cb = getCircuitBreakerRegistry() != null
+                            ? getCircuitBreakerRegistry().getOrCreate(listenerId)
+                            : null;
+                    if (cb != null && !cb.isCallPermitted()) {
+                        log.debug("[RACER-STREAM-LISTENER] '{}' circuit {} — skipping record {}",
+                                listenerId, cb.getState(), recordId);
+                        incrementFailed(listenerId);
+                        racerMetrics.recordFailed(streamKey, "circuit-open");
+                        return enqueueDeadLetter(message, new RacerCircuitOpenException(listenerId))
+                                .then(RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, recordId));
+                    }
 
-        // 0a. Circuit breaker gate — checked after parsing so the rejected message can
-        // be forwarded to the DLQ, providing a recovery path and failure visibility
-        // consistent with the Pub/Sub pipeline behaviour.
-        RacerCircuitBreaker cb = getCircuitBreakerRegistry() != null
-                ? getCircuitBreakerRegistry().getOrCreate(listenerId)
-                : null;
-        if (cb != null && !cb.isCallPermitted()) {
-            log.debug("[RACER-STREAM-LISTENER] '{}' circuit {} — skipping record {}",
-                    listenerId, cb.getState(), recordId);
-            incrementFailed(listenerId);
-            racerMetrics.recordFailed(streamKey, "circuit-open");
-            return enqueueDeadLetter(message, new RacerCircuitOpenException(listenerId))
-                    .then(RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, recordId));
-        }
+                    // 0b. Deduplication check (only when annotation flag is set)
+                    if (dedupEnabled && getDedupService() != null) {
+                        return getDedupService().checkAndMarkProcessed(message.getId(), listenerId)
+                                .flatMap(shouldProcess -> {
+                                    if (!shouldProcess) {
+                                        log.debug("[RACER-STREAM-LISTENER] '{}' duplicate id={} — skipping record {}",
+                                                listenerId, message.getId(), recordId);
+                                        return RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, recordId);
+                                    }
+                                    return processChecked(bean, method, streamKey, group, record, listenerId, message,
+                                            cb);
+                                });
+                    }
 
-        // 0b. Deduplication check (only when annotation flag is set)
-        if (dedupEnabled && getDedupService() != null) {
-            return getDedupService().checkAndMarkProcessed(message.getId(), listenerId)
-                    .flatMap(shouldProcess -> {
-                        if (!shouldProcess) {
-                            log.debug("[RACER-STREAM-LISTENER] '{}' duplicate id={} — skipping record {}",
-                                    listenerId, message.getId(), recordId);
-                            return RacerStreamUtils.ackRecord(redisTemplate, streamKey, group, recordId);
-                        }
-                        return processChecked(bean, method, streamKey, group, record, listenerId, message, cb);
-                    });
-        }
-
-        return processChecked(bean, method, streamKey, group, record, listenerId, message, cb);
+                    return processChecked(bean, method, streamKey, group, record, listenerId, message, cb);
+                });
     }
 
     private Mono<Void> processChecked(Object bean, Method method,
@@ -490,18 +514,19 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
         }
 
         // Resolve argument — most failures here are JSON deserialization errors caused
-        // by bad
-        // producer payloads; log at WARN (not ERROR) and include the target type +
-        // payload
-        // preview so the problem is immediately diagnosable without reading raw Redis
-        // entries.
+        // by bad producer payloads; log at WARN (not ERROR) and include the target type
+        // +
+        // payload preview so the problem is immediately diagnosable.
+        // Use the pre-compiled ObjectReader from the registration to avoid per-message
+        // deserializer lookup (#8).
+        StreamListenerRegistration reg = streamListenerRegistrations.get(listenerId);
         Object arg;
         try {
-            arg = resolveArgument(method, message);
+            arg = resolveArgument(method, message, reg);
         } catch (Exception e) {
-            String paramTypeName = method.getParameterCount() > 0
-                    ? method.getParameterTypes()[0].getSimpleName()
-                    : "unknown";
+            String paramTypeName = (reg != null && reg.primaryParamType() != null)
+                    ? reg.primaryParamType().getSimpleName()
+                    : (method.getParameterCount() > 0 ? method.getParameterTypes()[0].getSimpleName() : "unknown");
             String payload = message.getPayload();
             String preview = payload != null
                     ? payload.substring(0, Math.min(200, payload.length()))
@@ -526,7 +551,7 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
                     final Object finalArg;
                     if (intercepted != message && !isNoArg) {
                         try {
-                            finalArg = resolveArgument(method, intercepted);
+                            finalArg = resolveArgument(method, intercepted, reg);
                         } catch (Exception e) {
                             log.error(
                                     "[RACER-STREAM-LISTENER] '{}' — cannot resolve argument after intercept for {}: {}",
@@ -594,15 +619,41 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
         return RacerStreamUtils.ensureGroup(redisTemplate, streamKey, group);
     }
 
-    private Object resolveArgument(Method method, RacerMessage message) throws Exception {
+    /**
+     * Resolves the primary handler argument from the message envelope.
+     * Uses the pre-compiled {@link StreamListenerRegistration#payloadReader()} and
+     * cached {@link StreamListenerRegistration#primaryParamType()} when available
+     * to avoid per-message type resolution and ObjectReader lookup (#8).
+     *
+     * @param method  handler method (used for parameter count / fallback type)
+     * @param message the message being processed
+     * @param reg     registration carrying pre-compiled reader; may be {@code null}
+     */
+    private Object resolveArgument(Method method, RacerMessage message,
+            @Nullable StreamListenerRegistration reg) throws Exception {
         if (method.getParameterCount() == 0)
             return null;
-        Class<?> paramType = method.getParameterTypes()[0];
+        // Use cached primary param type when available — avoids getParameterTypes()
+        // allocation
+        Class<?> paramType = (reg != null && reg.primaryParamType() != null)
+                ? reg.primaryParamType()
+                : method.getParameterTypes()[0];
         if (RacerMessage.class.isAssignableFrom(paramType))
             return message;
         if (String.class.equals(paramType))
             return message.getPayload();
+        // Use the pre-compiled reader when available — avoids per-message deserializer
+        // lookup
+        if (reg != null && reg.payloadReader() != null)
+            return reg.payloadReader().readValue(message.getPayload());
         return objectMapper.readValue(message.getPayload(), paramType);
+    }
+
+    /**
+     * Legacy overload for call-sites that do not have the registration available.
+     */
+    private Object resolveArgument(Method method, RacerMessage message) throws Exception {
+        return resolveArgument(method, message, null);
     }
 
     private String resolve(String value) {
@@ -759,9 +810,10 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
         }
 
         // Resolve argument
+        StreamListenerRegistration reg = streamListenerRegistrations.get(listenerId);
         Object arg;
         try {
-            arg = resolveArgument(method, message);
+            arg = resolveArgument(method, message, reg);
         } catch (Exception e) {
             log.warn("[RACER-STREAM-LISTENER] '{}' argument resolution failed in test: {}", listenerId, e.getMessage());
             if (cb != null)
@@ -781,7 +833,7 @@ public class RacerStreamListenerRegistrar extends AbstractRacerRegistrar {
                     final Object finalArg;
                     if (intercepted != message && !isNoArg) {
                         try {
-                            finalArg = resolveArgument(method, intercepted);
+                            finalArg = resolveArgument(method, intercepted, reg);
                         } catch (Exception e) {
                             if (cb != null)
                                 cb.onFailure();
